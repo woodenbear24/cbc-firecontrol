@@ -41,3 +41,17 @@ repo/
 
 ### Blockbench ###
 Blockbench_5.2.2_portable.exe
+
+### Ad-hoc build log files (gradle redirect captures during manual runs) ###
+b*.txt
+b*_err.txt
+build[0-9]*.txt
+build[0-9]*_err.txt
+buildfinal.txt
+buildfinal_err.txt
+build_output.txt
+compile_output.log
+compile_output.txt
+
+### Local reference copy of CBC upstream sources (for API lookup during dev only) ###
+.cbc_src/

@@ -58,6 +58,12 @@ neoForge {
         minecraftVersion = project.parchment_minecraft_version
     }
 
+    // Explicitly declare our Access Transformer (ModDevGradle auto-detects this path,
+    // but CBC's own build.gradle uses the same explicit style; being explicit also
+    // ensures the AT is applied to the runtime classpath when CBC's class loads.)
+    // This widens CBC CannonMountBlockEntity.running to protected.
+    accessTransformers = project.files('src/main/resources/META-INF/accesstransformer.cfg')
+
     // Default run configurations.
     runs {
         client {
