@@ -2,30 +2,46 @@ package com.cbc.firecontrol.block;
 
 import com.cbc.firecontrol.init.CBCFCBlockEntities;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlock;
 import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockEntity;
 
 /**
- * Fire Control Mount - a copy of CBC's Cannon Mount Block.
+ * Fire Control Mount - half-slab variant of CBC's Cannon Mount Block.
  *
- * Extending CannonMountBlock inherits from CBC (which itself extends Create's KineticBlock):
- *   - 4 BlockStates: HORIZONTAL_FACING, ASSEMBLY_POWERED, FIRE_POWERED, VERTICAL_DIRECTION
- *   - Placement orientation via BlockPlaceContext
- *   - getRotationAxis / hasShaftTowards (kinetic connections)
- *   - Wrench rotation behavior (onWrenched / getRotatedBlockState / cycle VERTICAL_DIRECTION)
- *   - neighborChanged + tick for redstone-driven assembly/fire signals
- *   - KineticBlock super-behavior (Create integration)
- *   - Kinetic block state preservation on replace (onPlace)
- *   - updateIndirectNeighbourShapes speed updates
+ * Physical block occupancy is HALF the cell:
+ *   VERTICAL_DIRECTION=DOWN (upright, base plate on floor, cannon above)  -> lower half [0,0,0]-[16,8,16]
+ *   VERTICAL_DIRECTION=UP   (inverted, base plate on ceiling, cannon below) -> upper half [0,8,0]-[16,16,16]
  *
- * We only override getBlockEntityType() to point at OUR registered BE type;
- * getBlockEntityClass() is inherited unchanged (returns CBC's parent class,
- * which is assignable from our BE subclass → runtime validation passes).
+ * Block model files (see assets/cbc_firecontrol/models/block/) render a plinth occupying the physical
+ * half plus thin bracket structure (neck + cap + guards) extending up into the empty half of the cell.
+ * Model geometry exceeds collision so mount visually reads as "pedestal with bracket arms reaching
+ * toward the cannon cell" while entities only collide with the plinth half.
+ *
+ * Cannon assembly position = 1 grid cell in the cannon direction (adjacent, not 2 like CBC's default).
+ * See FireControlMountBlockEntity.assemble() and resetContraptionToOffset() for the -1 offset formula.
+ *
+ * Kinetic network (hasShaftTowards inherited from CannonMountBlock) unchanged: Create's connection logic
+ * is logical (face predicate match), not physical overlap. Half-slab mount still validly accepts shafts
+ * on 2 horizontal pitch-axis faces + VERTICAL_DIRECTION face.
+ *
+ * Wrench cycle (getRotatedBlockState), redstone-driven assembly/fire signals (neighborChanged/tick),
+ * onPlace kinetic state preservation, and updateIndirectNeighbourShapes all inherited unchanged.
  */
 public class FireControlMountBlock extends CannonMountBlock {
+
+	private static final VoxelShape SHAPE_LOWER_HALF = Shapes.box(0, 0, 0, 1, 0.5, 1);
+	private static final VoxelShape SHAPE_UPPER_HALF = Shapes.box(0, 0.5, 0, 1, 1, 1);
 
 	public FireControlMountBlock(Properties properties) {
 		super(properties);
@@ -45,6 +61,22 @@ public class FireControlMountBlock extends CannonMountBlock {
 	@Override
 	public BlockEntityType<? extends CannonMountBlockEntity> getBlockEntityType() {
 		return CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get();
+	}
+
+	@Override
+	public VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
+		return slabShape(state);
+	}
+
+	@Override
+	public VoxelShape getCollisionShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
+		return slabShape(state);
+	}
+
+	private static VoxelShape slabShape(BlockState state) {
+		return state.getValue(BlockStateProperties.VERTICAL_DIRECTION) == Direction.DOWN
+				? SHAPE_LOWER_HALF
+				: SHAPE_UPPER_HALF;
 	}
 }
 

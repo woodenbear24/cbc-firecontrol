@@ -1,0 +1,76 @@
+{
+	"credit": "Y-mirror of fire_control_mount.json (vertical_direction=up)",
+	"parent": "minecraft:block/block",
+	"textures": {
+		"0": "create:block/industrial_iron_block",
+		"1": "create:block/brass_block",
+		"particle": "create:block/industrial_iron_block"
+	},
+	"elements": [
+		{
+			"name": "plinth",
+			"from": [0, 8, 0],
+			"to": [16, 16, 16],
+			"faces": {
+				"north": {"uv": [0, 8, 16, 16], "texture": "#0"},
+				"east": {"uv": [0, 8, 16, 16], "texture": "#0"},
+				"south": {"uv": [0, 8, 16, 16], "texture": "#0"},
+				"west": {"uv": [0, 8, 16, 16], "texture": "#0"},
+				"up": {"uv": [0, 0, 16, 16], "texture": "#0"},
+				"down": {"uv": [0, 0, 16, 16], "texture": "#0"}
+			}
+		},
+		{
+			"name": "neck",
+			"from": [5, 7, 5],
+			"to": [11, 8, 11],
+			"faces": {
+				"north": {"uv": [0, 10, 6, 11], "texture": "#0"},
+				"east": {"uv": [0, 10, 6, 11], "texture": "#0"},
+				"south": {"uv": [0, 10, 6, 11], "texture": "#0"},
+				"west": {"uv": [0, 10, 6, 11], "texture": "#0"},
+				"up": {"uv": [0, 10, 6, 16], "texture": "#0"},
+				"down": {"uv": [0, 10, 6, 16], "texture": "#0"}
+			}
+		},
+		{
+			"name": "cap",
+			"from": [0, 5, 0],
+			"to": [16, 7, 16],
+			"faces": {
+				"north": {"uv": [0, 14, 16, 16], "texture": "#1"},
+				"east": {"uv": [0, 14, 16, 16], "texture": "#1"},
+				"south": {"uv": [0, 14, 16, 16], "texture": "#1"},
+				"west": {"uv": [0, 14, 16, 16], "texture": "#1"},
+				"up": {"uv": [0, 0, 16, 16], "texture": "#1"},
+				"down": {"uv": [0, 0, 16, 16], "texture": "#1"}
+			}
+		},
+		{
+			"name": "guard_west",
+			"from": [0, 0, 0],
+			"to": [1, 5, 16],
+			"faces": {
+				"north": {"uv": [0, 11, 1, 16], "texture": "#1"},
+				"east": {"uv": [0, 11, 16, 16], "texture": "#1"},
+				"south": {"uv": [0, 11, 1, 16], "texture": "#1"},
+				"west": {"uv": [0, 11, 16, 16], "texture": "#1"},
+				"up": {"uv": [0, 0, 1, 16], "texture": "#1"},
+				"down": {"uv": [0, 0, 1, 16], "texture": "#1"}
+			}
+		},
+		{
+			"name": "guard_east",
+			"from": [15, 0, 0],
+			"to": [16, 5, 16],
+			"faces": {
+				"north": {"uv": [0, 11, 1, 16], "texture": "#1"},
+				"east": {"uv": [0, 11, 16, 16], "texture": "#1"},
+				"south": {"uv": [0, 11, 1, 16], "texture": "#1"},
+				"west": {"uv": [0, 11, 16, 16], "texture": "#1"},
+				"up": {"uv": [0, 0, 1, 16], "texture": "#1"},
+				"down": {"uv": [0, 0, 1, 16], "texture": "#1"}
+			}
+		}
+	]
+}

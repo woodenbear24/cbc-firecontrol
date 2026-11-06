@@ -14,6 +14,8 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlock;
 import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockEntity;
@@ -22,21 +24,27 @@ import rbasamoyai.createbigcannons.cannon_control.contraption.PitchOrientedContr
 import rbasamoyai.createbigcannons.cannons.CannonContraptionProviderBlock;
 
 /**
- * Fire Control Mount BlockEntity.
+ * Fire Control Mount BlockEntity - half-slab mount variant.
  *
  * Inherits almost everything from CBC's CannonMountBlockEntity:
  *   - Kinetic pitch/yaw interfaces (pitchInterface, yawInterface)
- *   - applyRotation() logic that syncs cannonYaw/cannonPitch → mountedContraption
- *   - disassemble(), resetContraptionToOffset(), calculateCannonStressApplied()
+ *   - applyRotation() logic that syncs cannonYaw/cannonPitch -> mountedContraption
+ *   - disassemble(), calculateCannonStressApplied()
  *   - Goggle tooltip via {@link #addToGoggleTooltip} (inherited, calls ExtendsCannonMount.addCannonInfoToTooltip)
  *   - Assembly exception display via getLastAssemblyException() (inherited)
  *   - Item handler / capabilities for the mounted contraption (inherited)
  *
- * Overridden:
+ * Overridden for half-slab layout differences:
+ *   - assemble(): assemblyPos = 1 grid in cannon direction (was 2 in CBC).
+ *   - resetContraptionToOffset(): CBC's body hardcodes relative(vertical, -2); ours uses -1 so the
+ *     mounted cannon entity ends at the correct world position matching our new assemblyPos.
+ *   - createRenderBoundingBox(): CBC expanded +/-2 blocks (sized for CBC's ROTATING_MOUNT disc at
+ *     mount-pos +/-1 plus carriage axle at mount-pos +/-2). Ours expands +/-1 (only interface shaft
+ *     visuals at mount cell plus mount model's guard structure reaching mount cell top boundary;
+ *     assembled cannon entity has its own AABB covering the whole cannon structure).
+ *
+ * Overridden for CBC-vs-our-block identity handling:
  *   - Constructor: initializes cannonYaw for our block (CBC only does so for CBCBlocks.CANNON_MOUNT)
- *   - assemble(): CBC's own body has "if (!CBCBlocks.CANNON_MOUNT.has(state)) return;"
- *                 which rejects our mount. We inline equivalent logic, gated on our block instead.
- *                 Uses the AT-exposed 'running' field to activate CBC's tick rotation path.
  *   - tick(): CBC's early-return "reset from state" branch only fires for CBCBlocks.CANNON_MOUNT;
  *             our mount needs the same reset so cannonYaw visually follows wrench rotations.
  *   - getTypeId(): returns a cbc_firecontrol-namespaced id so CBC code paths that key
@@ -51,13 +59,19 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity {
 	 * so Field.setAccessible(true) on another mod's private field works without --add-opens.
 	 */
 	private static final Field RUNNING_FIELD;
+	private static final Field PREV_YAW_FIELD;
+	private static final Field PREV_PITCH_FIELD;
 	static {
 		try {
 			RUNNING_FIELD = CannonMountBlockEntity.class.getDeclaredField("running");
 			RUNNING_FIELD.setAccessible(true);
+			PREV_YAW_FIELD = CannonMountBlockEntity.class.getDeclaredField("prevYaw");
+			PREV_YAW_FIELD.setAccessible(true);
+			PREV_PITCH_FIELD = CannonMountBlockEntity.class.getDeclaredField("prevPitch");
+			PREV_PITCH_FIELD.setAccessible(true);
 		} catch (NoSuchFieldException e) {
 			throw new IllegalStateException(
-					"CBC field layout changed: 'running' missing on CannonMountBlockEntity; "
+					"CBC field layout changed: 'running'/'prevYaw'/'prevPitch' missing on CannonMountBlockEntity; "
 							+ "CBC Fire Control needs a matching update.", e);
 		}
 	}
@@ -68,6 +82,24 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity {
 		} catch (IllegalAccessException e) {
 			throw new IllegalStateException(
 					"Could not write CBC CannonMountBlockEntity.running (CBC version mismatch?).", e);
+		}
+	}
+
+	private static void setPrevYaw(CannonMountBlockEntity target, float value) {
+		try {
+			PREV_YAW_FIELD.setFloat(target, value);
+		} catch (IllegalAccessException e) {
+			throw new IllegalStateException(
+					"Could not write CBC CannonMountBlockEntity.prevYaw (CBC version mismatch?).", e);
+		}
+	}
+
+	private static void setPrevPitch(CannonMountBlockEntity target, float value) {
+		try {
+			PREV_PITCH_FIELD.setFloat(target, value);
+		} catch (IllegalAccessException e) {
+			throw new IllegalStateException(
+					"Could not write CBC CannonMountBlockEntity.prevPitch (CBC version mismatch?).", e);
 		}
 	}
 
@@ -84,7 +116,10 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity {
 		if (!CBCFCBlocks.FIRE_CONTROL_MOUNT.has(this.getBlockState())) return;
 
 		Direction vertical = this.getBlockState().getValue(BlockStateProperties.VERTICAL_DIRECTION);
-		BlockPos assemblyPos = this.worldPosition.relative(vertical, -2);
+		// Half-slab layout: assemblyPos = 1 grid in cannon direction (was 2 in CBC's full-block mount).
+		//   - vertical=DOWN (upright mount, cannon above): assemblyPos = mount.above(1) = mountPos+1 (adjacent cell)
+		//   - vertical=UP   (inverted mount, cannon below): assemblyPos = mount.below(1) = mountPos-1 (adjacent cell)
+		BlockPos assemblyPos = this.worldPosition.relative(vertical, -1);
 		if (this.getLevel().isOutsideBuildHeight(assemblyPos)) {
 			throw cannonBlockOutsideOfWorld(assemblyPos);
 		}
@@ -112,6 +147,55 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity {
 
 		this.sendData();
 		AllSoundEvents.CONTRAPTION_ASSEMBLE.playOnServer(this.getLevel(), this.worldPosition);
+	}
+
+	/**
+	 * Override CBC's protected resetContraptionToOffset() which hardcodes relative(vertical, -2)
+	 * when positioning the mounted cannon contraption entity. Our half-slab layout moved
+	 * assemblyPos to relative(vertical, -1); entity position MUST match assemblyPos formula, otherwise
+	 * the assembled cannon ends up one block away from where the assembly scan actually placed it.
+	 */
+	@Override
+	protected void resetContraptionToOffset() {
+		if (this.mountedContraption == null) return;
+		this.cannonPitch = 0;
+		this.cannonYaw = this.getContraptionDirection().toYRot();
+		// prevYaw/prevPitch are private in CBC; write them via reflection helpers above.
+		// They back the client-side lerp interpolation used by getPitchOffset/getYawOffset each frame;
+		// setting both to the freshly-reset cannonYaw/cannonPitch prevents a first-frame visual snap
+		// from a stale prior value.
+		setPrevPitch(this, this.cannonPitch);
+		setPrevYaw(this, this.cannonYaw);
+
+		this.mountedContraption.pitch = this.cannonPitch;
+		this.mountedContraption.yaw = this.cannonYaw;
+		this.mountedContraption.prevPitch = this.mountedContraption.pitch;
+		this.mountedContraption.prevYaw = this.mountedContraption.yaw;
+
+		this.mountedContraption.setXRot(this.cannonPitch);
+		this.mountedContraption.setYRot(this.cannonYaw);
+		this.mountedContraption.xRotO = this.mountedContraption.getXRot();
+		this.mountedContraption.yRotO = this.mountedContraption.getYRot();
+
+		Direction vertical = this.getBlockState().getValue(BlockStateProperties.VERTICAL_DIRECTION);
+		// Formula MUST match assemble()'s assemblyPos line (both use relative(vertical, -1)).
+		Vec3 vec = Vec3.atBottomCenterOf((this.worldPosition.relative(vertical, -1)));
+		this.mountedContraption.setPos(vec);
+	}
+
+	@Override
+	public AABB createRenderBoundingBox() {
+		// Half-slab mount:
+		//   - plinth + cap model geometry lives inside AABB(pos) (plinth 0..8 model units, cap 9..11,
+		//     guards up to 16 = mount cell top boundary; all within AABB(getBlockPos()) 0..1 range).
+		//   - Interface shaft visuals (SHAFT, SHAFT_HALF) render at mount cell center inside AABB(pos).
+		//   - Expand +/-1 in cannon direction for margin (mount cell top boundary at y=1.0 world;
+		//     +1 covers the adjacent cannon-assembly cell in case mount-side visuals bleed a few units
+		//     past the boundary when the mount's SHAFT partial pivots slightly during wrench rotation).
+		// The assembled mounted cannon entity has its OWN AABB covering the entire cannon structure,
+		// so mount BE does not need to extend into the cannon cell interior.
+		boolean upsideDown = this.getBlockState().getValue(BlockStateProperties.VERTICAL_DIRECTION) == Direction.UP;
+		return new AABB(this.getBlockPos()).expandTowards(0, upsideDown ? -1 : 1, 0);
 	}
 
 	@Override

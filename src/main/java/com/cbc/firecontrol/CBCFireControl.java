@@ -111,9 +111,40 @@ public class CBCFireControl {
 		event.enqueueWork(() -> {
 			var beType = CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get();
 			BlockEntityVisualizer<?> visualizer = VisualizerRegistry.getVisualizer(beType);
-			LOGGER.info("Flywheel visualizer lookup for {} -> {}",
-					beType.toString(),
-					visualizer != null ? visualizer.getClass().getName() : "NOT REGISTERED (visual will not run)");
+			if (visualizer == null) {
+				LOGGER.warn("Flywheel visualizer lookup for {} -> NULL (no visualizer registered)",
+						beType.toString());
+				return;
+			}
+			// Create's CreateBlockEntityBuilder registers visualizers by wrapping the user's
+			// constructor reference in Flywheel's SimpleBlockEntityVisualizer via .builder(beType)
+			// .factory(...).apply(). So the outer class is always SimpleBlockEntityVisualizer whether
+			// wiring worked or not (Flywheel returns its own unconfigured default for unregistered
+			// types). To see whether the wiring actually happened, reflect into the wrapper's private
+			// visualFactory field and inspect which class the factory instantiates.
+			String factoryInfo = "<non-SimpleBlockEntityVisualizer: " + visualizer.getClass().getName() + ">";
+			try {
+				java.lang.reflect.Field factoryField =
+						dev.engine_room.flywheel.lib.visualization.SimpleBlockEntityVisualizer.class
+								.getDeclaredField("visualFactory");
+				factoryField.setAccessible(true);
+				Object factory = factoryField.get(visualizer);
+				if (factory == null) {
+					factoryInfo = "SimpleBlockEntityVisualizer with NO factory (Flywheel default, wiring skipped)";
+				} else {
+					// Call factory.create(...) with nulls to inspect the concrete visual class produced.
+					// Our visualizer's constructor does not touch these args before super() and interface
+					// type checks, but super() DOES access them -- so wrap in try and just print the
+					// factory's functional type via lambda class naming (invokedynamic-generated class
+					// name includes method-reference target as "...$$Lambda$NNN/0xADDR" -- we get enough
+					// info from the factory's toString()).
+					factoryInfo = "factory=" + factory.getClass().getName();
+				}
+			} catch (ReflectiveOperationException e) {
+				factoryInfo = "reflect failed: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+			}
+			LOGGER.info("Flywheel visualizer lookup for {} -> outer={}, {}",
+					beType.toString(), visualizer.getClass().getName(), factoryInfo);
 		});
 	}
 
