@@ -62,3 +62,6 @@ run_client.ps1
 
 ### Local reference copy of CBC upstream sources (for API lookup during dev only) ###
 .cbc_src/
+
+### Local reference copy of Flywheel API sources (extracted from Gradle cache jar for API lookup only) ###
+.flywheel_src/

@@ -3,6 +3,7 @@ package com.cbc.firecontrol;
 import org.slf4j.Logger;
 
 import com.cbc.firecontrol.init.CBCFCBlockEntities;
+import com.cbc.firecontrol.init.CBCFCBlockPartials;
 import com.cbc.firecontrol.init.CBCFCBlocks;
 import com.cbc.firecontrol.init.CBCFCCreativeTabs;
 import com.mojang.logging.LogUtils;
@@ -108,6 +109,18 @@ public class CBCFireControl {
 	}
 
 	private void clientSetupDiag(FMLClientSetupEvent event) {
+		// CRITICAL for Flywheel partial baking: Flywheel's PartialModelEventHandler.onRegisterAdditional
+		// iterates PartialModel.ALL keys at ModelEvent.RegisterAdditional time (fires after
+		// FMLClientSetupEvent). Any partial that has not been created via PartialModel.of(loc) by
+		// that point will never be added to Minecraft's bake list -> its bakedModel stays null ->
+		// Flywheel's Models.partial(...) returns a null model and renders as purple/black missing
+		// texture. Our CBCFCBlockPartials class-init would otherwise be deferred until the
+		// visualizer actually runs during rendering (way after bake). Force it here so both our
+		// ROTATING_MOUNT and CARRIAGE_AXLE partials are registered in time.
+		CBCFCBlockPartials.init();
+		LOGGER.info("CBC Fire Control: registered Flywheel partials {}.fire_control_rotating and {}.carriage_axle",
+				CBCFireControl.MODID, CBCFireControl.MODID);
+
 		event.enqueueWork(() -> {
 			var beType = CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get();
 			BlockEntityVisualizer<?> visualizer = VisualizerRegistry.getVisualizer(beType);

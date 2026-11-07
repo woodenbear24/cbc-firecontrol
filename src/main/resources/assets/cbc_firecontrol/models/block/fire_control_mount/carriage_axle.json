@@ -1,0 +1,37 @@
+{
+	"credit": "Self-contained variant of CBC cannon_carriage/carriage_axle.json. Inline texture refs sidestep Flywheel PartialModel parent-alias resolution issues that caused purple/black missing texture when the parent chain 'createbigcannons:block/cannon_carriage/textures' supplied the #axis / #axis_top aliases (see Flywheel PartialModelEventHandler.onRegisterAdditional which only bakes models present in PartialModel.ALL at bake time and cannot re-resolve parent chains lazily). Textures restored to Create's own shaft axis pattern (create:block/axis + create:block/axis_top) matching CBC's original visual style so the carriage axle reads as 'mechanical shaft' per user request '耳轴使用的黄铜贴图也应该改回机械动力转轴的样式'. Face UV rects and rotation angles copied verbatim from CBC's original carriage_axle.json. The two faces with UV [0,0,0,0] are CBC's design choice to make the axle half-cubes' inner meeting faces invisible so the two halves butt together at model X=8 without z-fighting.",
+	"parent": "minecraft:block/block",
+	"textures": {
+		"0": "create:block/axis",
+		"1": "create:block/axis_top",
+		"particle": "create:block/axis_top"
+	},
+	"elements": [
+		{
+			"name": "axle_right_half",
+			"from": [8, 6, 6],
+			"to": [20, 10, 10],
+			"faces": {
+				"north": {"uv": [6, 0, 10, 12], "rotation": 90, "texture": "#0"},
+				"east": {"uv": [6, 6, 10, 10], "texture": "#1"},
+				"south": {"uv": [6, 0, 10, 12], "rotation": 90, "texture": "#0"},
+				"west": {"uv": [0, 0, 0, 0], "texture": "#1"},
+				"up": {"uv": [6, 0, 10, 12], "rotation": 90, "texture": "#0"},
+				"down": {"uv": [6, 0, 10, 12], "rotation": 90, "texture": "#0"}
+			}
+		},
+		{
+			"name": "axle_left_half",
+			"from": [-4, 6, 6],
+			"to": [8, 10, 10],
+			"faces": {
+				"north": {"uv": [6, 0, 10, 12], "rotation": 90, "texture": "#0"},
+				"east": {"uv": [0, 0, 0, 0], "texture": "#1"},
+				"south": {"uv": [6, 0, 10, 12], "rotation": 90, "texture": "#0"},
+				"west": {"uv": [6, 6, 10, 10], "texture": "#1"},
+				"up": {"uv": [6, 0, 10, 12], "rotation": 90, "texture": "#0"},
+				"down": {"uv": [6, 0, 10, 12], "rotation": 90, "texture": "#0"}
+			}
+		}
+	]
+}
