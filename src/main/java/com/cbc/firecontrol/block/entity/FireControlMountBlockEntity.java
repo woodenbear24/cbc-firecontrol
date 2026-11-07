@@ -11,6 +11,8 @@ import com.simibubi.create.content.contraptions.AssemblyException;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
@@ -216,6 +218,72 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity {
 	@Override
 	public ResourceLocation getTypeId() {
 		return ResourceLocation.fromNamespaceAndPath(CBCFireControl.MODID, "fire_control_mount");
+	}
+
+	/* ---------- Fire Control console (server-side actions, invoked from CBCFCNetwork.handleControl) ---------- */
+
+	/** Authoritative readouts shipped to the GUI via MountStatePayload. */
+	public float consoleYaw() {
+		return this.cannonYaw;
+	}
+
+	public float consolePitch() {
+		return this.cannonPitch;
+	}
+
+	public void consoleAssemble() {
+		if (this.level == null || this.level.isClientSide() || this.isRunning())
+			return;
+		try {
+			this.assemble();
+		} catch (AssemblyException e) {
+			CBCFireControl.LOGGER.warn("console assemble failed at {}: {}", this.worldPosition, e.getMessage());
+		}
+	}
+
+	public void consoleDisassemble() {
+		if (this.level == null || this.level.isClientSide() || !this.isRunning())
+			return;
+		this.disassemble();
+	}
+
+	public void consoleFire() {
+		if (this.level == null || this.level.isClientSide() || !this.isRunning())
+			return;
+		if (!(this.level instanceof ServerLevel slevel) || this.mountedContraption == null)
+			return;
+		var contraption = this.mountedContraption.getContraption();
+		if (contraption instanceof AbstractMountedCannonContraption cannon
+				&& cannon.canBeFiredOnController(this)) {
+			cannon.fireShot(slevel, this.mountedContraption);
+		}
+	}
+
+	/** Positive deg = clockwise. While assembled, turn the cannon; otherwise cycle the mount facing. */
+	public void consoleAdjustYaw(float deg) {
+		if (this.level == null || this.level.isClientSide())
+			return;
+		if (this.isRunning()) {
+			this.cannonYaw = Mth.wrapDegrees(this.cannonYaw + deg);
+			this.applyRotation();
+		} else {
+			BlockState s = this.getBlockState();
+			Direction f = s.getValue(CannonMountBlock.HORIZONTAL_FACING);
+			Direction nf = deg > 0 ? f.getClockWise() : f.getCounterClockWise();
+			this.level.setBlock(this.worldPosition, s.setValue(CannonMountBlock.HORIZONTAL_FACING, nf), 11);
+			this.cannonYaw = nf.toYRot();
+		}
+	}
+
+	/** Positive deg = elevate. Only while assembled; clamped to the cannon's elevation/depression limits. */
+	public void consoleAdjustPitch(float deg) {
+		if (this.level == null || this.level.isClientSide() || !this.isRunning() || this.mountedContraption == null)
+			return;
+		float d = this.mountedContraption.maximumDepression();
+		float e = this.mountedContraption.maximumElevation();
+		float sgn = this.mountedContraption.getInitialOrientation() == Direction.DOWN ? -1.0f : 1.0f;
+		this.cannonPitch = Mth.clamp(this.cannonPitch + sgn * deg, -d, e);
+		this.applyRotation();
 	}
 }
 

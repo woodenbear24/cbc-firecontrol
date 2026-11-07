@@ -4,12 +4,16 @@ import com.cbc.firecontrol.init.CBCFCBlockEntities;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
@@ -61,6 +65,26 @@ public class FireControlMountBlock extends CannonMountBlock {
 	@Override
 	public BlockEntityType<? extends CannonMountBlockEntity> getBlockEntityType() {
 		return CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get();
+	}
+
+	/**
+	 * Empty-hand right-click opens the Fire Control Mount status screen
+	 * {@link com.cbc.firecontrol.client.FireControlMountScreen}. Both hands must be empty so wrench
+	 * rotation, kinetic shaft attachment and block placement (items in hand) fall through to
+	 * {@code super.useWithoutItem} unchanged. The screen is a client-only display opened directly from
+	 * the client branch, so no server container/packet is involved. Follow-up: interactive buttons
+	 * would need a server round-trip.
+	 */
+	@Override
+	public InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hit) {
+		if (player.getMainHandItem().isEmpty() && player.getOffhandItem().isEmpty()) {
+			if (level.isClientSide) {
+				net.minecraft.client.Minecraft.getInstance().setScreen(
+						new com.cbc.firecontrol.client.FireControlMountScreen(pos));
+			}
+			return InteractionResult.sidedSuccess(level.isClientSide);
+		}
+		return super.useWithoutItem(state, level, pos, player, hit);
 	}
 
 	@Override

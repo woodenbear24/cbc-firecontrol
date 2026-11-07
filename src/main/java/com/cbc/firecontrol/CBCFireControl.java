@@ -6,6 +6,9 @@ import com.cbc.firecontrol.init.CBCFCBlockEntities;
 import com.cbc.firecontrol.init.CBCFCBlockPartials;
 import com.cbc.firecontrol.init.CBCFCBlocks;
 import com.cbc.firecontrol.init.CBCFCCreativeTabs;
+import com.cbc.firecontrol.network.CBCFCNetwork;
+import com.cbc.firecontrol.network.MountControlPayload;
+import com.cbc.firecontrol.network.MountStatePayload;
 import com.mojang.logging.LogUtils;
 import com.simibubi.create.foundation.data.CreateRegistrate;
 
@@ -27,6 +30,8 @@ import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 @Mod(CBCFireControl.MODID)
 public class CBCFireControl {
@@ -76,6 +81,7 @@ public class CBCFireControl {
 		// wiring really didn't happen and no amount of CBC subclassing tricks will render
 		// the rotating/pitching parts.
 		modEventBus.addListener(EventPriority.LOWEST, this::clientSetupDiag);
+		modEventBus.addListener(this::registerPackets);
 		NeoForge.EVENT_BUS.register(this);
 	}
 
@@ -106,6 +112,13 @@ public class CBCFireControl {
 			LOGGER.info("CBC Fire Control loaded — Fire Control Mount registered: {}",
 					CBCFCBlocks.FIRE_CONTROL_MOUNT.getId());
 		});
+	}
+
+	private void registerPackets(RegisterPayloadHandlersEvent event) {
+		PayloadRegistrar registrar = event.registrar(MODID);
+		registrar.playToServer(MountControlPayload.TYPE, MountControlPayload.STREAM_CODEC, CBCFCNetwork::handleControl);
+		registrar.playToClient(MountStatePayload.TYPE, MountStatePayload.STREAM_CODEC, CBCFCNetwork::handleStateClient);
+		LOGGER.info("CBC Fire Control: registered mount-control payload handlers");
 	}
 
 	private void clientSetupDiag(FMLClientSetupEvent event) {
