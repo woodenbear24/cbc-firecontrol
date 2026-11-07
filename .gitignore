@@ -65,3 +65,6 @@ run_client.ps1
 
 ### Local reference copy of Flywheel API sources (extracted from Gradle cache jar for API lookup only) ###
 .flywheel_src/
+
+### Cline ###
+.cline/

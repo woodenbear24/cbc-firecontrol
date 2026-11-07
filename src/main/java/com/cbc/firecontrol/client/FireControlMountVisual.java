@@ -25,15 +25,19 @@ import com.cbc.firecontrol.init.CBCFCBlockPartials;
  * Flywheel visualizer for the half-slab Fire Control Mount. Emits two OrientedInstances
  * (fire_control_rotating turntable cradle + carriage axle) and NO kinetic interface shaft instances.
  *
- * Positioning:
- *   Both instances sit at mount cell corner + 1 block in cannon direction (= assembly pos
- *   cell corner in our adjacent-cannon layout). Model coordinates are unchanged from the user's
- *   bbmodel export (fire_control_rotating Y 0..20, carriage_axle Y 6..10), so under this
- *   positioning the rotating plate lands at world Y 1.0..1.125 (assembly cell bottom face) with
- *   a visible 0.5-block pedestal gap above the half-slab plinth top at world 0.5, and the carriage
- *   axle lands at world Y 1.375..1.625 (assembly cell middle). Both are consistent with how CBC's
- *   own mount partial reads when placed on top of its full-block mount; our half-slab variant
- *   shows the gap because the plinth only fills the lower half of the mount cell.
+ * Positioning (local-coordinate system):
+ *   Flywheel orients an instance as  world = origin + pivot + R*(v - pivot), so the flip/rotation
+ *   happens about the point (origin + pivot). Both instances use origin = mount-cell mid-plane
+ *   corner (pos.x, pos.y+0.5, pos.z) with an EXPLICIT pivot (0.5, 0.0, 0.5), so origin+pivot lands
+ *   exactly on the mount CELL CENTER (pos+0.5,0.5,0.5) for BOTH orientations. The inverted mount's
+ *   Z-180 flip (see transformModels) then mirrors the whole cradle through the cell center - this
+ *   is what fixes the "turntable floats off to the side / on the wrong half" bug in the inverted
+ *   screenshots (Flywheel's DEFAULT pivot (0.5,0.5,0.5) put the center at the cell TOP pos.y+1.0,
+ *   so the flip orbited the cradle the wrong way). The model is authored with the plate at model
+ *   Y 0, so the mid-plane origin seats the plate on the plinth surface whether upright (lower-half
+ *   top) or flipped (upper-half bottom). The carriage axle uses the same origin+pivot, so its model
+ *   Y 6..10 mirrors through the cell center right along with the comb opening it sits in - aligned
+ *   in both orientations with AXLE_LOCAL_LIFT=0 (no per-orientation world-Y hack).
  *
  * Rotation:
  *   rotatingMount: mount's yaw only (CBC convention; the cradle plate + posts + arms yaw with
@@ -53,34 +57,43 @@ public class FireControlMountVisual extends KineticBlockEntityVisual<CannonMount
 	public FireControlMountVisual(VisualizationContext ctx, CannonMountBlockEntity be, float partialTick) {
 		super(ctx, be, partialTick);
 
-		Direction vertical = be.getBlockState().getValue(BlockStateProperties.VERTICAL_DIRECTION);
-		Direction cannonDir = vertical.getOpposite();
+		// Flywheel orients an instance as world = position + pivot + R*(v - pivot); the rotation and
+		// the upside-down flip all act about (position + pivot).
+		//
+		// The cradle (fire_control_rotating) and the carriage axle (carriage_axle) are ONE physical
+		// assembly whose single pivot is the cannon trunnion / shaft axis: the horizontal shaft line
+		// (model Y8,Z8) crossed by the vertical yaw axis (model X8,Z8) = block (0.5, 0.5, 0.5) in BOTH
+		// partials' local model space (their geometry centres). They must rotate about that same point.
+		//
+		// CRADLE: seats the turntable plate (model Y0) on the plinth inner face. position = mid-plane
+		// corner (pos.y + 0.5), pivot (0.5, 0, 0.5) => centre at the CELL CENTRE, so the qyaw Z-180
+		// mirrors the cradle through the cell mid-plane in both orientations (plate on plinth; comb /
+		// shaft at cell top when upright, cell bottom when inverted).
+		//
+		// AXLE: must PITCH about the shaft itself, so its pivot sits ON the shaft line = its own
+		// geometry centre (block 0.5,0.5,0.5). Then (shaft - pivot) = 0, so qyaw1's pitch spins the
+		// axle about its own shaft and the SHAFT MIDPOINT STAYS FIXED - the axle only rotates, it
+		// never translates out of the comb (the drift was because the old pivot Y=0 left the shaft 0.5
+		// below the centre, so pitch swung it sideways). position is chosen so position + pivot lands on
+		// the CANNON-BODY centre = assembly-cell centre, mirroring CBC whose carriage axle sits half a
+		// block INTO the assembly cell: upright => pos+1.5 (offset +1.0), inverted => pos-0.5 (offset
+		// -1.0). The mount cradle fork prongs span pos+0.94..1.75, so the shaft also stays gripped by
+		// the comb. Yaw is shared because it is about the same vertical line (x .5, z .5).
+		boolean upsideDown = this.blockState.getValue(BlockStateProperties.VERTICAL_DIRECTION) == Direction.UP;
+		float originX = this.getVisualPosition().getX();
+		float originZ = this.getVisualPosition().getZ();
 
-		// Position: mount cell corner + 1 block in cannon dir = assembly pos cell corner.
-		// Same formula as CBC's rotatingMount instance (relative(cannonDir)).
-		// CBC's carriageAxle used relative(vertical, -2) (assembly pos in CBC's 2-block-away layout);
-		// we use relative(cannonDir) = relative(vertical, -1), moving the axle 1 block closer to mount
-		// so it lines up with our new adjacent assembly pos.
-		// translatePosition Y -0.5 shifts instance origin from assembly cell corner (integer Y)
-		// down 0.5 blocks so the model plate bottom (model Y 0) sits at mount cell top boundary
-		// world Y mount_cell_Y + 0.5, exactly touching the half-slab plinth top for SHAPE_LOWER_HALF
-		// upright mount. For upside-down mount (SHAPE_UPPER_HALF) the Z-180 flip makes model Y 0
-		// the plate's world-highest corner, so the same mount_cell_Y + 0.5 origin lands plate top
-		// at plinth bottom boundary → both cases touch the plinth surface without any model-file Y edit.
-		// carriageAxle uses model Y 6..10 (CBC convention) which, at the same shifted origin, lands
-		// at world mount_cell_Y + 0.875 .. mount_cell_Y + 1.125 for upright mount (inside cannon
-		// breech region), matching where the cannon pivots.
-		BlockPos assemblyCell = this.getVisualPosition().relative(cannonDir);
-		float mountCellTopY = (float) this.getVisualPosition().getY() + 0.5f;
 		this.rotatingMount = instancerProvider()
 				.instancer(InstanceTypes.ORIENTED, Models.partial(CBCFCBlockPartials.FIRE_CONTROL_ROTATING))
 				.createInstance()
-				.position(assemblyCell.getX(), mountCellTopY, assemblyCell.getZ());
+				.position(originX, this.getVisualPosition().getY() + 0.5f, originZ)
+				.pivot(0.5f, 0.0f, 0.5f);
 
 		this.carriageAxle = instancerProvider()
 				.instancer(InstanceTypes.ORIENTED, Models.partial(CBCFCBlockPartials.CARRIAGE_AXLE))
 				.createInstance()
-				.position(assemblyCell.getX(), mountCellTopY, assemblyCell.getZ());
+				.position(originX, this.getVisualPosition().getY() + (upsideDown ? -1.0f : 1.0f), originZ)
+				.pivot(0.5f, 0.5f, 0.5f);
 
 		transformModels(partialTick);
 	}

@@ -78,7 +78,8 @@
 					],
 					"texture": "#0"
 				}
-			}
+			},
+			"shade": false
 		},
 		{
 			"from": [
@@ -156,7 +157,8 @@
 					],
 					"texture": "#0"
 				}
-			}
+			},
+			"shade": false
 		},
 		{
 			"from": [
@@ -234,7 +236,8 @@
 					],
 					"texture": "#0"
 				}
-			}
+			},
+			"shade": false
 		},
 		{
 			"from": [
@@ -312,7 +315,8 @@
 					],
 					"texture": "#0"
 				}
-			}
+			},
+			"shade": false
 		},
 		{
 			"from": [
@@ -390,7 +394,8 @@
 					],
 					"texture": "#0"
 				}
-			}
+			},
+			"shade": false
 		},
 		{
 			"from": [
@@ -468,7 +473,8 @@
 					],
 					"texture": "#0"
 				}
-			}
+			},
+			"shade": false
 		},
 		{
 			"from": [
@@ -546,7 +552,8 @@
 					],
 					"texture": "#0"
 				}
-			}
+			},
+			"shade": false
 		},
 		{
 			"from": [
@@ -624,7 +631,8 @@
 					],
 					"texture": "#0"
 				}
-			}
+			},
+			"shade": false
 		},
 		{
 			"from": [
@@ -702,7 +710,8 @@
 					],
 					"texture": "#0"
 				}
-			}
+			},
+			"shade": false
 		}
 	],
 	"groups": [
