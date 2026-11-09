@@ -3,9 +3,11 @@ package com.cbc.firecontrol;
 import org.slf4j.Logger;
 
 import com.cbc.firecontrol.init.CBCFCBlockEntities;
+import com.cbc.firecontrol.init.CBCFCArmInteractionPointTypes;
 import com.cbc.firecontrol.init.CBCFCBlockPartials;
 import com.cbc.firecontrol.init.CBCFCBlocks;
 import com.cbc.firecontrol.init.CBCFCCreativeTabs;
+import com.cbc.firecontrol.init.CBCFCMenus;
 import com.cbc.firecontrol.network.CBCFCNetwork;
 import com.cbc.firecontrol.network.MountControlPayload;
 import com.cbc.firecontrol.network.MountStatePayload;
@@ -18,6 +20,7 @@ import dev.engine_room.flywheel.api.visualization.VisualizerRegistry;
 import rbasamoyai.createbigcannons.cannon_control.config.CannonMountPropertiesHandler;
 import rbasamoyai.createbigcannons.cannon_control.config.SimpleBlockMountProperties;
 import rbasamoyai.createbigcannons.cannon_control.cannon_types.CannonContraptionTypeRegistry;
+import rbasamoyai.createbigcannons.remix.CBCHasIItemHandlerBlockEntity;
 
 import net.minecraft.resources.ResourceLocation;
 
@@ -28,9 +31,12 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.neoforged.neoforge.capabilities.Capabilities;
+import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.registries.RegisterEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 @Mod(CBCFireControl.MODID)
@@ -71,9 +77,12 @@ public class CBCFireControl {
 		// (since bus is non-null on those OneTimeEventReceiver.addModListener calls).
 		CBCFCBlocks.init();
 		CBCFCBlockEntities.init();
+		// Arm interaction point is registered during RegisterEvent, NOT here (the
+		// create:arm_interaction_point_type registry is already frozen in the mod constructor).
 
 		// Creative tab uses plain NeoForge DeferredRegister (independent of CreateRegistrate).
 		CBCFCCreativeTabs.register(modEventBus);
+		CBCFCMenus.register(modEventBus);
 
 		modEventBus.addListener(this::commonSetup);
 		// LOWEST priority so this diagnostic runs AFTER CBC's own visualizer wiring
@@ -82,6 +91,8 @@ public class CBCFireControl {
 		// the rotating/pitching parts.
 		modEventBus.addListener(EventPriority.LOWEST, this::clientSetupDiag);
 		modEventBus.addListener(this::registerPackets);
+		modEventBus.addListener(this::onRegister);
+		modEventBus.addListener(CBCFireControl::onRegisterCapabilities);
 		NeoForge.EVENT_BUS.register(this);
 	}
 
@@ -119,6 +130,32 @@ public class CBCFireControl {
 		registrar.playToServer(MountControlPayload.TYPE, MountControlPayload.STREAM_CODEC, CBCFCNetwork::handleControl);
 		registrar.playToClient(MountStatePayload.TYPE, MountStatePayload.STREAM_CODEC, CBCFCNetwork::handleStateClient);
 		LOGGER.info("CBC Fire Control: registered mount-control payload handlers");
+	}
+
+	/**
+	 * Register an ItemHandler capability for our mount block entity so Create's
+	 * Mechanical Arm / Funnel / Depot can target the Fire Control Mount as an
+	 * interaction object. CBC only registers its own CANNON_MOUNT BE type
+	 * (see CBCCommonNeoForgeEvents.onRegisterCapabilities); our separate
+	 * BlockEntityType must register itself. The inherited getItemHandler(side)
+	 * forwards to the assembled PitchOrientedContraptionEntity's ItemHandler.ENTITY
+	 * (CBC-registered), which for a mounted autocannon is the breech's
+	 * createItemHandler() (insert slot 1 = ammo in, extract slot 0 = spent case out).
+	 */
+	private void onRegister(RegisterEvent event) {
+		// Register Create's arm interaction point during the RegisterEvent phase (before the
+		// create:arm_interaction_point_type registry freezes), mirroring CBC's
+		// CreateBigCannonsNeoForge.onRegister -> CBCArmInteractionPointTypes.init().
+		// CBCFCArmInteractionPointTypes.register() is idempotent (guarded), and RegisterEvent
+		// fires once per registry, so the first callback while that registry is open does the add.
+		CBCFCArmInteractionPointTypes.register();
+	}
+
+	private static void onRegisterCapabilities(RegisterCapabilitiesEvent event) {
+		event.registerBlockEntity(Capabilities.ItemHandler.BLOCK,
+				CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get(),
+				(be, side) -> ((CBCHasIItemHandlerBlockEntity) be).getItemHandler(side));
+		LOGGER.info("CBC Fire Control: registered ItemHandler.BLOCK capability for mount (Mechanical Arm / Funnel target)");
 	}
 
 	private void clientSetupDiag(FMLClientSetupEvent event) {

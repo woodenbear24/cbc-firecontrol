@@ -9,6 +9,8 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntityType;
+import net.minecraft.world.level.LevelReader;
+
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
@@ -68,24 +70,38 @@ public class FireControlMountBlock extends CannonMountBlock {
 	}
 
 	/**
-	 * Empty-hand right-click opens the Fire Control Mount status screen
-	 * {@link com.cbc.firecontrol.client.FireControlMountScreen}. Both hands must be empty so wrench
-	 * rotation, kinetic shaft attachment and block placement (items in hand) fall through to
-	 * {@code super.useWithoutItem} unchanged. The screen is a client-only display opened directly from
-	 * the client branch, so no server container/packet is involved. Follow-up: interactive buttons
-	 * would need a server round-trip.
+	 * Empty-hand right-click opens the mount's Create-style radio frequency menu
+	 * {@link com.cbc.firecontrol.menu.MountFrequencyMenu} (server-side {@code openMenu}; the mount block
+	 * entity is a {@link net.minecraft.world.MenuProvider}). Both hands must be empty so wrench rotation,
+	 * kinetic shaft attachment and block placement (items in hand) fall through to
+	 * {@code super.useWithoutItem} unchanged. The menu lets the player assign the 5 channel frequencies
+	 * (Create redstone-link Couple) that drive Yaw+/Yaw-/Pitch+/Pitch-/Fire wirelessly.
 	 */
 	@Override
 	public InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hit) {
 		if (player.getMainHandItem().isEmpty() && player.getOffhandItem().isEmpty()) {
-			if (level.isClientSide) {
-				net.minecraft.client.Minecraft.getInstance().setScreen(
-						new com.cbc.firecontrol.client.FireControlMountScreen(pos));
+			if (!level.isClientSide
+					&& level.getBlockEntity(pos) instanceof com.cbc.firecontrol.block.entity.FireControlMountBlockEntity mount
+					&& player instanceof net.minecraft.server.level.ServerPlayer serverPlayer) {
+				serverPlayer.openMenu(mount, buf -> buf.writeBlockPos(pos));
 			}
 			return InteractionResult.sidedSuccess(level.isClientSide);
 		}
 		return super.useWithoutItem(state, level, pos, player, hit);
 	}
+
+    /**
+     * Kinetic / stress input is restricted to the mount's BASE face only.
+     * Upright (VERTICAL_DIRECTION=DOWN): the DOWN (bottom) face is the sole power/stress
+     * input; inverted (UP): the UP face. CBC's two horizontal pitch-axis side faces are no
+     * longer accepted, so a shaft / Rotation Speed Controller cannot be attached to the
+     * mount's sides - the mount draws its kinetic stress requirement purely from below.
+     */
+    @Override
+    public boolean hasShaftTowards(LevelReader world, BlockPos pos, BlockState state, Direction face) {
+        return face == state.getValue(BlockStateProperties.VERTICAL_DIRECTION);
+    }
+
 
 	@Override
 	public VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {

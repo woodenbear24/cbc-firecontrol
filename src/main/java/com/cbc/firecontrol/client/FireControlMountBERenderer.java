@@ -12,6 +12,7 @@ import net.createmod.catnip.render.CachedBuffers;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider;
+
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
@@ -57,7 +58,8 @@ public class FireControlMountBERenderer extends SafeBlockEntityRenderer<CannonMo
 	@Override
 	protected void renderSafe(CannonMountBlockEntity be, float partialTicks, PoseStack ms,
 			MultiBufferSource buffer, int light, int overlay) {
-		if (VisualizationManager.supportsVisualization(be.getLevel())) return;
+		if (VisualizationManager.supportsVisualization(be.getLevel()))
+			return;
 
 		BlockState state = be.getBlockState();
 		Direction vertical = state.getValue(BlockStateProperties.VERTICAL_DIRECTION);
@@ -103,4 +105,5 @@ public class FireControlMountBERenderer extends SafeBlockEntityRenderer<CannonMo
 				.renderInto(ms, solidBuf);
 		ms.popPose();
 	}
+
 }

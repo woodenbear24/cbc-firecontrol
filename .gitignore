@@ -60,6 +60,7 @@ run_client_err.log
 run_compile.ps1
 run_client.ps1
 
+
 ### Local reference copy of CBC upstream sources (for API lookup during dev only) ###
 .cbc_src/
 
@@ -68,3 +69,4 @@ run_client.ps1
 
 ### Cline ###
 .cline/
+.temp/
