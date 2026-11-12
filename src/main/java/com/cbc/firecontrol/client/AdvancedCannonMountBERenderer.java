@@ -21,9 +21,9 @@ import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockE
 import com.cbc.firecontrol.init.CBCFCBlockPartials;
 
 /**
- * Non-Flywheel BE renderer fallback for the half-slab Fire Control Mount.
+ * Non-Flywheel BE renderer fallback for the half-slab Advanced Cannon Mount.
  *
- * Renders exactly the same OrientedInstance set as {@link FireControlMountVisual}: a turntable
+ * Renders exactly the same OrientedInstance set as {@link AdvancedCannonMountVisual}: a turntable
  * cradle using our custom partial model {@link CBCFCBlockPartials#FIRE_CONTROL_ROTATING}
  * (translate 0.5 to the mount mid-plane + yaw rotation), and a carriage axle using
  * {@link CBCFCBlockPartials#CARRIAGE_AXLE} (translate 0.5, yaw then pitch rotation). Neither
@@ -51,9 +51,9 @@ import com.cbc.firecontrol.init.CBCFCBlockPartials;
  *     sidestepping the Flywheel PartialModel bake-time issue where a parent alias can remain
  *     unresolved and render purple/black missing-texture.
  */
-public class FireControlMountBERenderer extends SafeBlockEntityRenderer<CannonMountBlockEntity> {
+public class AdvancedCannonMountBERenderer extends SafeBlockEntityRenderer<CannonMountBlockEntity> {
 
-	public FireControlMountBERenderer(BlockEntityRendererProvider.Context context) { }
+	public AdvancedCannonMountBERenderer(BlockEntityRendererProvider.Context context) { }
 
 	@Override
 	protected void renderSafe(CannonMountBlockEntity be, float partialTicks, PoseStack ms,
@@ -95,7 +95,7 @@ public class FireControlMountBERenderer extends SafeBlockEntityRenderer<CannonMo
 		// the shaft midpoint never translates out of the comb. translate() just lifts that centre onto
 		// the comb opening, orientation-dependent so it crosses the CANNON BODY: upright cannon-body
 		// centre (pos+1.5) => translate +1.0, inverted (pos-0.5) => translate -1.0, mirroring CBC's
-		// carriage-in-assembly-cell placement and the qyaw Z-180 flip. Mirrors FireControlMountVisual's
+		// carriage-in-assembly-cell placement and the qyaw Z-180 flip. Mirrors AdvancedCannonMountVisual's
 		// axle pivot (0.5,0.5,0.5) + orientation Y offset; BERenderer is the no-Flywheel fallback path.
 		ms.pushPose();
 		CachedBuffers.partial(CBCFCBlockPartials.CARRIAGE_AXLE, state)

@@ -22,7 +22,7 @@ import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockE
 import com.cbc.firecontrol.init.CBCFCBlockPartials;
 
 /**
- * Flywheel visualizer for the half-slab Fire Control Mount. Emits two OrientedInstances
+ * Flywheel visualizer for the half-slab Advanced Cannon Mount. Emits two OrientedInstances
  * (fire_control_rotating turntable cradle + carriage axle) and NO kinetic interface shaft instances.
  *
  * Positioning (local-coordinate system):
@@ -49,12 +49,12 @@ import com.cbc.firecontrol.init.CBCFCBlockPartials;
  * omitted. See class-body javadoc block further below for the visual-clutter rationale; kinetic
  * network logic is unaffected (Create's hasShaftTowards is a face predicate, not rendered geometry).
  */
-public class FireControlMountVisual extends KineticBlockEntityVisual<CannonMountBlockEntity> implements SimpleDynamicVisual {
+public class AdvancedCannonMountVisual extends KineticBlockEntityVisual<CannonMountBlockEntity> implements SimpleDynamicVisual {
 
 	private final OrientedInstance rotatingMount;
 	private final OrientedInstance carriageAxle;
 
-	public FireControlMountVisual(VisualizationContext ctx, CannonMountBlockEntity be, float partialTick) {
+	public AdvancedCannonMountVisual(VisualizationContext ctx, CannonMountBlockEntity be, float partialTick) {
 		super(ctx, be, partialTick);
 
 		// Flywheel orients an instance as world = position + pivot + R*(v - pivot); the rotation and

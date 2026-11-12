@@ -3,7 +3,7 @@
     "maximum_depression": 0,
     "maximum_elevation": 0
   },
-  "cbc_firecontrol:fire_control_mount": {
+  "cbc_firecontrol:advanced_cannon_mount": {
     "vertical_direction=down": {
       "pitch_range": {
         "maximum_depression": 45,

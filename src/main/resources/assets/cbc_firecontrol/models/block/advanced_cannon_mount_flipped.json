@@ -1,6 +1,6 @@
 {
 	"format_version": "1.21.6",
-	"credit": "Same as fire_control_mount.json but Y-flipped 0..8 -> 8..16 to represent the upside-down half-slab plinth (SHAPE_UPPER_HALF collision variant).",
+	"credit": "Same as advanced_cannon_mount.json but Y-flipped 0..8 -> 8..16 to represent the upside-down half-slab plinth (SHAPE_UPPER_HALF collision variant).",
 	"elements": [
 		{
 			"from": [

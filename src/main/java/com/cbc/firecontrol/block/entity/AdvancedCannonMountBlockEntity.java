@@ -4,8 +4,15 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 import com.cbc.firecontrol.CBCFireControl;
+import com.cbc.firecontrol.ballistics.AimApplyResult;
+import com.cbc.firecontrol.ballistics.AimEnvelope;
+import com.cbc.firecontrol.ballistics.AimSolution;
+import com.cbc.firecontrol.ballistics.InverseBallistics;
+import com.cbc.firecontrol.ballistics.MountScanner;
+import com.cbc.firecontrol.ballistics.MountSnapshot;
 import com.cbc.firecontrol.init.CBCFCBlocks;
 
 import com.simibubi.create.AllSoundEvents;
@@ -38,6 +45,8 @@ import rbasamoyai.createbigcannons.cannon_control.contraption.ItemCannon;
 import rbasamoyai.createbigcannons.remix.GetItemStorage;
 import net.neoforged.neoforge.items.IItemHandler;
 import rbasamoyai.createbigcannons.cannons.CannonContraptionProviderBlock;
+import rbasamoyai.createbigcannons.cannon_control.contraption.MountedAutocannonContraption;
+import rbasamoyai.createbigcannons.cannons.autocannon.breech.AbstractAutocannonBreechBlockEntity;
 
 import com.cbc.firecontrol.init.CBCFCMenus;
 import com.cbc.firecontrol.menu.MountFrequencyMenu;
@@ -48,6 +57,7 @@ import com.simibubi.create.content.redstone.link.RedstoneLinkNetworkHandler.Freq
 import net.createmod.catnip.data.Couple;
 import net.createmod.catnip.math.AngleHelper;
 import net.createmod.catnip.math.VecHelper;
+import org.jetbrains.annotations.Nullable;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -60,7 +70,7 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
 
 /**
- * Fire Control Mount BlockEntity - half-slab mount variant.
+ * Advanced Cannon Mount BlockEntity - half-slab mount variant.
  *
  * Inherits almost everything from CBC's CannonMountBlockEntity:
  *   - Kinetic pitch/yaw interfaces (pitchInterface, yawInterface)
@@ -86,7 +96,7 @@ import net.minecraft.world.item.ItemStack;
  *   - getTypeId(): returns a cbc_firecontrol-namespaced id so CBC code paths that key
  *                  off mount-type identity don't mistake our mount for a stock CBC mount.
  */
-public class FireControlMountBlockEntity extends CannonMountBlockEntity implements MenuProvider {
+public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity implements MenuProvider {
 
 	/**
 	 * Reflection handle to CBC's private boolean 'running' field.
@@ -139,20 +149,36 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 		}
 	}
 
-	public FireControlMountBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
+	public AdvancedCannonMountBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
 		super(type, pos, state);
 		// Radio aiming needs a client sync every tick (not every 3) so the cradle/axle render as
 		// continuous motion; CBC's default lazy rate of 3 is tuned for idle stress syncs, not aiming.
 		this.setLazyTickRate(1);
-		if (CBCFCBlocks.FIRE_CONTROL_MOUNT.has(state)) {
+		if (CBCFCBlocks.ADVANCED_CANNON_MOUNT.has(state)) {
 			this.cannonYaw = state.getValue(BlockStateProperties.HORIZONTAL_FACING).toYRot();
 		}
+	}
+
+	/** Public read access to CBC's protected mountedContraption entity, for the Trajectory Calculator.
+	 *  Plain inherited-field accessor (no reflection, no mixin): mountedContraption is protected on CBC's
+	 *  CannonMountBlockEntity and this class is that subclass. Null while the mount is disassembled. */
+	public rbasamoyai.createbigcannons.cannon_control.contraption.PitchOrientedContraptionEntity mountedEntityOrNull() {
+		return this.mountedContraption;
+	}
+
+	/** Public read access to the protected CBC cannonYaw / cannonPitch, for the Trajectory Link tooltip. */
+	public float getLinkYaw() {
+		return Mth.wrapDegrees(this.cannonYaw);
+	}
+
+	public float getLinkPitch() {
+		return this.cannonPitch;
 	}
 
 	@Override
 	protected void assemble() throws AssemblyException {
 		// CBC's own assemble() is gated on CBCBlocks.CANNON_MOUNT.has(state); ours is gated on our block.
-		if (!CBCFCBlocks.FIRE_CONTROL_MOUNT.has(this.getBlockState())) return;
+		if (!CBCFCBlocks.ADVANCED_CANNON_MOUNT.has(this.getBlockState())) return;
 
 		Direction vertical = this.getBlockState().getValue(BlockStateProperties.VERTICAL_DIRECTION);
 		// Half-slab layout: assemblyPos = 1 grid in cannon direction (was 2 in CBC's full-block mount).
@@ -202,6 +228,63 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 					storage
 							? "item-handler ACTIVE: deposit via Funnel/Depot works (autocannon: ammo->slot1, spent case<-slot0)"
 							: "still auto-loadable: Mechanical Arm feeds this mount via the CBC CannonMountPoint arm interaction point (added CBCFCArmInteractionPointTypes)");
+		}
+	}
+
+	/** The currently assembled CBC autocannon contraption on this mount, or null if not an autocannon. */
+	private MountedAutocannonContraption getMountedAutocannon() {
+		if (this.mountedContraption == null)
+			return null;
+		var contraption = this.mountedContraption.getContraption();
+		return contraption instanceof MountedAutocannonContraption autocannon ? autocannon : null;
+	}
+
+	/** True when the assembled cannon on this mount is a CBC autocannon (MountedAutocannonContraption). */
+	private boolean isMountedAutocannon() {
+		return getMountedAutocannon() != null;
+	}
+
+	/**
+	 * Autocannon firing state machine (server tick). CBC continuous-fires a mounted autocannon only when BOTH
+	 * canBeFiredOnController(mount) is true AND the breech canFire()==(fireRate>0 && firingCooldown<=0). A mounted
+	 * autocannon that is NOT CBC-auto-firable (manual / manually-ridden "manual mode": right-click to ride, CBC's
+	 * ServerboundFiringActionPacket -> PitchOrientedContraptionEntity.tryFiringShot -> fireShot on left-click)
+	 * never continuous-fires on its own, so we simply HOLD its breech at the firing cadence while assembled - the
+	 * player rides it and left-clicks to fire, with NO wireless redstone link involved at all.
+	 *   - Manual/riding autocannon (CBC won't auto-fire): hold fireRate at cadence while running => left-click fires.
+	 *   - CBC-auto-firable mounted autocannon: keep idle fireRate 0 (no assembly blast); while the radio Fire channel
+	 *     is powered, issue one CBC fireShot per cadence step with fireRate raised only momentarily then reset to 0.
+	 */
+	private void updateAutocannonFiringState() {
+		MountedAutocannonContraption autocannon = getMountedAutocannon();
+		if (autocannon == null)
+			return;
+		if (!autocannon.canBeFiredOnController(this)) {
+			// Manual/riding autocannon: CBC will not continuous-fire it, so hold it at the firing cadence while
+			// assembled; left-click (CBC packet) fires it. No radio/wireless required.
+			setMountedAutocannonFireRate(this.isRunning() ? AUTOCANNON_FIRE_RATE_WHILE_FIRING : 0);
+			return;
+		}
+		if (!(channelPowered[CH_FIRE] && this.isRunning())) {
+			setMountedAutocannonFireRate(0);
+			return;
+		}
+		if (fireCooldown > 0)
+			return;
+		setMountedAutocannonFireRate(AUTOCANNON_FIRE_RATE_WHILE_FIRING);
+		consoleFire();
+		setMountedAutocannonFireRate(0);
+		fireCooldown = AUTOCANNON_FIRE_INTERVAL_TICKS;
+	}
+
+	/** Sets the mounted autocannon's breech fireRate (only writes when the value actually changes). */
+	private void setMountedAutocannonFireRate(int value) {
+		MountedAutocannonContraption autocannon = getMountedAutocannon();
+		if (autocannon == null)
+			return;
+		for (var be : autocannon.presentBlockEntities.values()) {
+			if (be instanceof AbstractAutocannonBreechBlockEntity breech && breech.getFireRate() != value)
+				breech.setFireRate(value);
 		}
 	}
 
@@ -262,7 +345,7 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 		// (correctly) not touch it again and will proceed into the rotation-update block once
 		// running=true is set by a successful assemble.
 		BlockState state = this.getBlockState();
-		if (!this.isRunning() && CBCFCBlocks.FIRE_CONTROL_MOUNT.has(state)) {
+		if (!this.isRunning() && CBCFCBlocks.ADVANCED_CANNON_MOUNT.has(state)) {
 			this.cannonYaw = state.getValue(BlockStateProperties.HORIZONTAL_FACING).toYRot();
 			this.cannonPitch = 0;
 		}
@@ -272,7 +355,7 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 
 	@Override
 	public ResourceLocation getTypeId() {
-		return ResourceLocation.fromNamespaceAndPath(CBCFireControl.MODID, "fire_control_mount");
+		return ResourceLocation.fromNamespaceAndPath(CBCFireControl.MODID, "advanced_cannon_mount");
 	}
 
 	/* ---------- Wireless radio-link channels + Create redstone-link receivers + frequency menu ---------- */
@@ -287,6 +370,12 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 	private static final float WIRELESS_YAW_STEP = 2.0F;
 	private static final float WIRELESS_PITCH_STEP = 1.0F;
 	private static final int FIRE_COOLDOWN_TICKS = 5;
+	/** Breech fireRate index temporarily raised around each autocannon shot so CBC's own fireShot passes its
+	 *  canFire() (fireRate>0). FIRE_RATES[14]=4 ticks/round. It is set straight back to 0 after the shot, so CBC's
+	 *  contraption-tick continuous auto-fire never runs => no self-firing on assembly / idle. */
+	private static final int AUTOCANNON_FIRE_RATE_WHILE_FIRING = 15;
+	/** Autocannon shot spacing while the radio Fire channel is powered: 4 ticks/round = 5 rounds/sec. */
+	private static final int AUTOCANNON_FIRE_INTERVAL_TICKS = 4;
 	private static final int AIM_RPM_MIN = 1;
 	private static final int AIM_RPM_MAX = 32;
 	private static final int AIM_RPM_DEFAULT = 8;
@@ -298,6 +387,60 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 	private final List<MountLinkReceiver> activeReceivers = new ArrayList<>();
 	private int fireCooldown;
 	private boolean linkInitDone;
+
+	/**
+	 * Persistent identity of THIS mount. 1.21.1 removed {@code BlockEntity#getUUID()}, so this mod owns its id:
+	 * generated once on the server, saved in the mount's own NBT, and mirrored to clients through the block
+	 * entity data packet. A calculator link card references mounts by this id (with coordinates cached for a
+	 * fast direct lookup) so the card survives rebuilds instead of silently following a reused coordinate.
+	 */
+	private UUID mountId;
+	/** Bookkeeping for {@link MountIdIndex}: which position this id is currently registered at. */
+	private UUID indexedId;
+	private BlockPos indexedPos;
+
+	/**
+	 * Stable per-mount id. Assigned on demand on the SERVER (and persisted); a client copy that has not yet
+	 * received the synced value returns null rather than inventing a different id.
+	 */
+	@Nullable
+	public UUID mountId() {
+		if (mountId != null)
+			return mountId;
+		Level level = getLevel();
+		if (level == null || level.isClientSide())
+			return null;
+		mountId = UUID.randomUUID();
+		setChanged();
+		return mountId;
+	}
+
+	/** Server only: keep this mount findable by id at its current position. */
+	private void updateMountIndex() {
+		Level level = getLevel();
+		if (level == null || level.isClientSide())
+			return;
+		UUID id = mountId();
+		if (id == null)
+			return;
+		if (id.equals(indexedId) && worldPosition.equals(indexedPos))
+			return;
+		if (indexedId != null)
+			MountIdIndex.unregister(level, indexedId);
+		MountIdIndex.register(level, id, worldPosition);
+		indexedId = id;
+		indexedPos = worldPosition.immutable();
+	}
+
+	private void removeMountFromIndex() {
+		Level level = getLevel();
+		if (level == null || level.isClientSide() || indexedId == null)
+			return;
+		MountIdIndex.unregister(level, indexedId);
+		indexedId = null;
+		indexedPos = null;
+	}
+
 	private ScrollValueBehaviour aimSpeedBox;
 	private int aimRpm = AIM_RPM_DEFAULT;
 	/** Signed deg/tick actually applied to cannonYaw / cannonPitch on the last server tick; synced to
@@ -334,7 +477,7 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 
 	@Override
 	public Component getDisplayName() {
-		return Component.literal("Fire Control Mount - Radio");
+		return Component.literal("Advanced Cannon Mount - Radio");
 	}
 
 	/**
@@ -457,7 +600,13 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 					this.worldPosition, col, prev, power);
 		}
 		if (power > 0 && prev == 0 && col == CH_FIRE) {
-			if (fireCooldown <= 0) {
+			MountedAutocannonContraption autocannon = getMountedAutocannon();
+			if (autocannon != null) {
+				// Auto-firable mounted autocannon: radio cadence fires it; start promptly on the rising edge.
+				// Manual/riding autocannon is fired by CBC left-click and needs no radio here.
+				if (autocannon.canBeFiredOnController(this))
+					fireCooldown = 0;
+			} else if (fireCooldown <= 0) {
 				consoleFire();
 				fireCooldown = FIRE_COOLDOWN_TICKS;
 			}
@@ -469,8 +618,13 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 			return;
 		if (!linkInitDone)
 			rebuildLinkReceivers();
+		updateMountIndex();
 		if (fireCooldown > 0)
 			fireCooldown--;
+		// Autocannon firing (see updateAutocannonFiringState): a CBC-auto-firable mounted autocannon fires via the
+		// radio cadence with fireRate raised only momentarily (no idle/assembly blast); a manual/riding autocannon
+		// (CBC fires it on left-click) is held at the firing cadence while assembled, so it fires with NO wireless.
+		updateAutocannonFiringState();
 		// Rotation is radio-controlled ONLY (both yaw and pitch). CBC's kinetic->rotation coupling is
 		// disabled outright by overriding getAngularSpeed() to 0 (see below), so the mount can never be
 		// turned by the bottom shaft's speed - only the powered radio channels move it, and only while the
@@ -540,12 +694,14 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 	@Override
 	public void remove() {
 		unregisterReceivers();
+		removeMountFromIndex();
 		super.remove();
 	}
 
 	@Override
 	public void onChunkUnloaded() {
 		unregisterReceivers();
+		removeMountFromIndex();
 		super.onChunkUnloaded();
 	}
 
@@ -561,6 +717,8 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 	@Override
 	public void write(CompoundTag compound, HolderLookup.Provider registries, boolean clientPacket) {
 		super.write(compound, registries, clientPacket);
+		if (mountId != null)
+			compound.putString("MountId", mountId.toString());
 		ListTag list = new ListTag();
 		for (int i = 0; i < frequencyItems.length; i++) {
 			ItemStack st = frequencyItems[i];
@@ -579,6 +737,19 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 	@Override
 	protected void read(CompoundTag compound, HolderLookup.Provider registries, boolean clientPacket) {
 		super.read(compound, registries, clientPacket);
+		if (compound.contains("MountId", Tag.TAG_STRING)) {
+			String stored = compound.getString("MountId");
+			if (!stored.isEmpty()) {
+				try {
+					this.mountId = UUID.fromString(stored);
+				} catch (IllegalArgumentException e) {
+					CBCFireControl.LOGGER.warn("[cbc_firecontrol] mount {} has an unreadable MountId '{}'",
+							this.worldPosition, stored);
+				}
+			}
+		}
+		if (!clientPacket)
+			updateMountIndex();
 		this.appliedYawStep = compound.getFloat("AppliedYawStep");
 		this.appliedPitchStep = compound.getFloat("AppliedPitchStep");
 		if (aimSpeedBox != null) {
@@ -698,7 +869,7 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 			Level lvl = getLevel();
 			if (lvl == null || lvl.isClientSide() || isRemoved() || !lvl.isLoaded(worldPosition))
 				return false;
-			return lvl.getBlockEntity(worldPosition) == FireControlMountBlockEntity.this;
+			return lvl.getBlockEntity(worldPosition) == AdvancedCannonMountBlockEntity.this;
 		}
 
 		@Override
@@ -716,6 +887,19 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 
 	public float consolePitch() {
 		return this.cannonPitch;
+	}
+
+	/**
+	 * Public accessor for the currently assembled cannon contraption (null if none / not assembled).
+	 * Exposed because CBC's {@code mountedContraption} field and its getContraption() chain are
+	 * protected / cross-package, so the DisplaySource cannot read the loaded-round state directly.
+	 * This bridges it out without copying any CBC internals.
+	 */
+	public rbasamoyai.createbigcannons.cannon_control.contraption.AbstractMountedCannonContraption mountedCannonOrNull() {
+		if (this.mountedContraption == null)
+			return null;
+		var c = this.mountedContraption.getContraption();
+		return (c instanceof rbasamoyai.createbigcannons.cannon_control.contraption.AbstractMountedCannonContraption a) ? a : null;
 	}
 
 	public void consoleAssemble() {
@@ -804,6 +988,45 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 		}
 	}
 
+	/**
+	 * Elevation window this mount's assembled cannon physically allows, expressed in the solver's convention
+	 * (0 = level, positive = barrel up) rather than CBC's console value. CBC clamps its own {@code cannonPitch}
+	 * to {@code [-maximumDepression, maximumElevation]} and, for a mount assembled upside-down
+	 * ({@code initialOrientation == DOWN}), elevating the barrel DECREASES cannonPitch
+	 * ({@link #consoleAdjustPitch} applies {@code sgn * deg}), so for those mounts the window flips.
+	 *
+	 * <p>Two deliberate fallbacks keep the calculator useful: an idle mount (no contraption assembled yet) and
+	 * a mount whose CBC mount-properties entry is missing - CBC then reports elevation 0 / depression 0, which
+	 * would otherwise make every solve answer ELEVATION_LIMITED - both report {@link AimEnvelope#DEFAULT}
+	 * instead, and the log line below says which one happened.
+	 */
+	public double aimPitchMinDeg() {
+		return aimElevationWindow()[0];
+	}
+
+	public double aimPitchMaxDeg() {
+		return aimElevationWindow()[1];
+	}
+
+	private double[] aimElevationWindow() {
+		if (this.mountedContraption == null)
+			return new double[] { AimEnvelope.DEFAULT.pitchMinDeg(), AimEnvelope.DEFAULT.pitchMaxDeg() };
+		float d = this.mountedContraption.maximumDepression();
+		float e = this.mountedContraption.maximumElevation();
+		boolean inverted = this.mountedContraption.getInitialOrientation() == Direction.DOWN;
+		double min = inverted ? -e : -d;
+		double max = inverted ? d : e;
+		if (max - min < 1.0) {
+			if (this.level != null && !this.level.isClientSide())
+				CBCFireControl.LOGGER.warn(
+						"[cbc_firecontrol] mount @{} reports elevation={} depression={} - no CBC mount-properties entry"
+								+ " for this combination, using the wide default aim window",
+						this.worldPosition, e, d);
+			return new double[] { AimEnvelope.DEFAULT.pitchMinDeg(), AimEnvelope.DEFAULT.pitchMaxDeg() };
+		}
+		return new double[] { min, max };
+	}
+
 	/** Positive deg = elevate. Only while assembled; clamped to the cannon's elevation/depression limits. */
 	public void consoleAdjustPitch(float deg) {
 		if (this.level == null || this.level.isClientSide() || !this.isRunning() || this.mountedContraption == null)
@@ -816,6 +1039,60 @@ public class FireControlMountBlockEntity extends CannonMountBlockEntity implemen
 		this.appliedPitchStep = this.cannonPitch - prev;
 		this.applyRotation();
 		this.sendData();
+	}
+
+	/** Below this many degrees an axis counts as already on aim. */
+	public static final double AIM_DEADBAND_DEG = 0.05;
+
+	/**
+	 * Drive this mount to a solved aim. Both console APIs already speak the solver's convention -
+	 * {@link #consoleAdjustYaw(float)} is clockwise-positive, which is how {@link InverseBallistics#yawOf} counts
+	 * too (CBC's cannonYaw runs SOUTH 0 -> WEST 90, i.e. clockwise over the map), and
+	 * {@link #consoleAdjustPitch(float)} is elevate-positive like {@link InverseBallistics#pitchOf} - so the
+	 * conversion is a signed delta per axis with nothing else to translate.
+	 *
+	 * <p>The mount's CURRENT angles come from the scanned barrel direction rather than from the stored
+	 * cannonPitch, because CBC stores the NEGATIVE of the world elevation for a mount assembled barrel-down
+	 * (see {@link #aimElevationWindow()}) while consoleAdjustPitch's own sign flip is what makes its argument
+	 * elevate-positive. Reading the barrel instead of the stored number is correct for every orientation without
+	 * re-deriving CBC's internal sign, and it also catches a mount that got wrenched or slewed by something
+	 * other than this mod.
+	 *
+	 * <p>Clamping is reported rather than hidden: consoleAdjustPitch clamps to {@code [-maximumDepression,
+	 * maximumElevation]} itself and records how much of the request actually landed in {@code appliedPitchStep},
+	 * so a mount that cannot elevate far enough says so instead of claiming it is on aim.
+	 */
+	public AimApplyResult applySolvedAim(AimSolution aim) {
+		if (this.level == null || this.level.isClientSide())
+			return AimApplyResult.of(AimApplyResult.Status.NOT_ASSEMBLED);
+		if (aim == null || !aim.outcome().hasSolution())
+			return AimApplyResult.of(AimApplyResult.Status.NO_SOLUTION);
+
+		MountSnapshot snapshot = MountScanner.scan(this);
+		if (!snapshot.assembled())
+			return AimApplyResult.of(AimApplyResult.Status.NOT_ASSEMBLED);
+
+		double yawDelta = AngleHelper.getShortestAngleDiff((float) InverseBallistics.yawOf(snapshot.direction()),
+				(float) aim.yawDeg());
+		double pitchDelta = aim.pitchDeg() - InverseBallistics.pitchOf(snapshot.direction());
+		if (Math.abs(yawDelta) < AIM_DEADBAND_DEG && Math.abs(pitchDelta) < AIM_DEADBAND_DEG)
+			return AimApplyResult.of(AimApplyResult.Status.ALREADY_AIMED);
+
+		if (Math.abs(yawDelta) >= AIM_DEADBAND_DEG)
+			consoleAdjustYaw((float) yawDelta);
+		boolean clamped = false;
+		if (Math.abs(pitchDelta) >= AIM_DEADBAND_DEG) {
+			/*
+			 * appliedPitchStep is the render-lerp record of how far the LAST pitch change actually landed
+			 * (see interpolatedPitch). Clearing it first makes the clamp test about THIS request: CBC clamps
+			 * cannonPitch inside consoleAdjustPitch, so a shorter step than the one asked for means the mount's
+			 * own elevation limits stopped the barrel short of the solved angle.
+			 */
+			this.appliedPitchStep = 0.0f;
+			consoleAdjustPitch((float) pitchDelta);
+			clamped = Math.abs(this.appliedPitchStep) + 1.0e-3 < Math.abs(pitchDelta);
+		}
+		return new AimApplyResult(AimApplyResult.Status.APPLIED, yawDelta, pitchDelta, clamped);
 	}
 }
 

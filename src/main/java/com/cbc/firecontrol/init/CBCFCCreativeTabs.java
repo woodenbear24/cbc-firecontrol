@@ -14,8 +14,11 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 /**
  * Creative tab registration for CBC Fire Control.
  *
- * Uses vanilla's {@link net.minecraft.world.level.block.Block#asItem()} to reference
- * the BlockItem that CreateRegistrate auto-generated for {@link CBCFCBlocks#FIRE_CONTROL_MOUNT}.
+ * Uses vanilla's {@link net.minecraft.world.level.block.Block#asItem()} to reference the BlockItem
+ * CreateRegistrate auto-generated for each registered block, and lists BOTH mod items explicitly in
+ * displayItems. Note: this mod's CreateRegistrate default creative tab is the vanilla SEARCH tab
+ * (AbstractRegistrate.defaultCreativeModeTab = CreativeModeTabs.SEARCH), so items built via .item()
+ * are NOT auto-added to this custom tab - they must be added here.
  */
 public class CBCFCCreativeTabs {
 
@@ -26,12 +29,17 @@ public class CBCFCCreativeTabs {
 			CREATIVE_MODE_TABS.register("main", () -> CreativeModeTab.builder()
 					.title(Component.translatable("itemGroup.cbc_firecontrol"))
 					.withTabsBefore(CreativeModeTabs.SPAWN_EGGS)
-					.icon(() -> new ItemStack(CBCFCBlocks.FIRE_CONTROL_MOUNT.get().asItem()))
+					.icon(() -> new ItemStack(CBCFCBlocks.ADVANCED_CANNON_MOUNT.get().asItem()))
 					.displayItems((parameters, output) -> {
-						// Nothing to add: our item was already auto-added to this tab by some
-						// default wiring (CreateRegistrate's TAB_LOOKUP or NeoForge mod-tab auto-population),
-						// so an explicit output.accept(...) here duplicates it and NeoForge's Output
-						// wrapper throws "Itemstack ... already exists in the tab's list".
+						// Populate this dedicated tab explicitly with the mod's items. CreateRegistrate /
+						// AbstractRegistrate default creative tab = vanilla SEARCH (CreativeModeTabs.SEARCH),
+						// so items built via .item() are routed to SEARCH, NOT to this custom tab -> we add
+						// them here. Adding to THIS tab cannot collide with SEARCH (separate tabs), so no
+						// "Itemstack already exists" duplicate.
+						output.accept(CBCFCBlocks.ADVANCED_CANNON_MOUNT.get().asItem());
+						output.accept(CBCFCBlocks.TRAJECTORY_CALCULATOR.get().asItem());
+						output.accept(new ItemStack(CBCItems.CALCULATOR_LINK.get()));
+						output.accept(new ItemStack(CBCItems.TELESCOPE.get()));
 					})
 					.build());
 

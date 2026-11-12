@@ -1,0 +1,12 @@
+{
+  "variants": {
+    "facing=east,vertical_direction=down":   { "model": "cbc_firecontrol:block/advanced_cannon_mount",         "y": 270 },
+    "facing=east,vertical_direction=up":     { "model": "cbc_firecontrol:block/advanced_cannon_mount_flipped",  "y": 270 },
+    "facing=north,vertical_direction=down":  { "model": "cbc_firecontrol:block/advanced_cannon_mount",         "y": 180 },
+    "facing=north,vertical_direction=up":    { "model": "cbc_firecontrol:block/advanced_cannon_mount_flipped",  "y": 180 },
+    "facing=south,vertical_direction=down":  { "model": "cbc_firecontrol:block/advanced_cannon_mount" },
+    "facing=south,vertical_direction=up":    { "model": "cbc_firecontrol:block/advanced_cannon_mount_flipped" },
+    "facing=west,vertical_direction=down":   { "model": "cbc_firecontrol:block/advanced_cannon_mount",         "y": 90 },
+    "facing=west,vertical_direction=up":     { "model": "cbc_firecontrol:block/advanced_cannon_mount_flipped",  "y": 90 }
+  }
+}

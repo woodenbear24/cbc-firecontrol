@@ -60,6 +60,9 @@ run_client_err.log
 run_compile.ps1
 run_client.ps1
 
+### Scratch reference exports from item-model authoring (the tracked copies live under src/main/resources) ###
+calculator_link.png
+
 
 ### Local reference copy of CBC upstream sources (for API lookup during dev only) ###
 .cbc_src/

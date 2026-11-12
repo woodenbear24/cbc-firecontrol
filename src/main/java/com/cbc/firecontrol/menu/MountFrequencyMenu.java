@@ -1,6 +1,6 @@
 package com.cbc.firecontrol.menu;
 
-import com.cbc.firecontrol.block.entity.FireControlMountBlockEntity;
+import com.cbc.firecontrol.block.entity.AdvancedCannonMountBlockEntity;
 import com.cbc.firecontrol.init.CBCFCMenus;
 import com.simibubi.create.foundation.gui.menu.GhostItemMenu;
 
@@ -20,10 +20,10 @@ import net.neoforged.neoforge.items.ItemStackHandler;
 import net.neoforged.neoforge.items.SlotItemHandler;
 
 /**
- * Create-style "remote controller" container for the Fire Control Mount, modeled on Create's
+ * Create-style "remote controller" container for the Advanced Cannon Mount, modeled on Create's
  * LinkedControllerMenu. The top panel shows {@value #CHANNELS} columns of 2 ghost slots each
  * ("一个下面两个格子"); each column is one wireless control channel and its two items become a
- * Create redstone-link Couple&lt;Frequency&gt; (see {@link FireControlMountBlockEntity.MountLinkReceiver}).
+ * Create redstone-link Couple&lt;Frequency&gt; (see {@link AdvancedCannonMountBlockEntity.MountLinkReceiver}).
  *
  * Ghost slots accept ANY item and do not consume it (allowRepeats). The player places any item(s)
  * into a column's two slots to define that channel's Create-link frequency; then a matching Create
@@ -68,7 +68,7 @@ public class MountFrequencyMenu extends GhostItemMenu<BlockPos> {
 	@Override
 	protected ItemStackHandler createGhostInventory() {
 		ItemStackHandler inv = new ItemStackHandler(SLOT_COUNT);
-		if (player != null && player.level().getBlockEntity(contentHolder) instanceof FireControlMountBlockEntity mount) {
+		if (player != null && player.level().getBlockEntity(contentHolder) instanceof AdvancedCannonMountBlockEntity mount) {
 			ItemStack[] freq = mount.getFrequencyItems();
 			for (int i = 0; i < inv.getSlots() && i < freq.length; i++)
 				inv.setStackInSlot(i, freq[i]);
@@ -108,7 +108,7 @@ public class MountFrequencyMenu extends GhostItemMenu<BlockPos> {
 		if (player == null || player.level().isClientSide())
 			return;
 		BlockEntity be = player.level().getBlockEntity(contentHolder);
-		if (be instanceof FireControlMountBlockEntity mount) {
+		if (be instanceof AdvancedCannonMountBlockEntity mount) {
 			ItemStack[] arr = new ItemStack[ghostInventory.getSlots()];
 			for (int i = 0; i < arr.length; i++)
 				arr[i] = ghostInventory.getStackInSlot(i);
@@ -142,7 +142,7 @@ public class MountFrequencyMenu extends GhostItemMenu<BlockPos> {
 		if (contentHolder == null)
 			return false;
 		BlockPos pos = (BlockPos) contentHolder;
-		if (!(playerIn.level().getBlockEntity(pos) instanceof FireControlMountBlockEntity))
+		if (!(playerIn.level().getBlockEntity(pos) instanceof AdvancedCannonMountBlockEntity))
 			return false;
 		return playerIn.distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5) <= 16 * 16;
 	}

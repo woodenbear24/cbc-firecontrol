@@ -19,5 +19,6 @@ public class CBCFCClientEvents {
 	@SubscribeEvent
 	public static void onRegisterMenuScreens(RegisterMenuScreensEvent event) {
 		event.register(CBCFCMenus.MOUNT_FREQUENCY.get(), MountFrequencyScreen::new);
+		event.register(CBCFCMenus.TRAJECTORY_CALCULATOR.get(), TrajectoryCalculatorScreen::new);
 	}
 }

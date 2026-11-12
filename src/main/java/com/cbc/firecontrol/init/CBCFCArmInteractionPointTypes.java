@@ -21,7 +21,7 @@ import rbasamoyai.createbigcannons.cannons.big_cannons.breeches.quickfiring_bree
  * Registers a Create Mechanical-Arm interaction point for OUR radio mount so it behaves exactly
  * like a CBC Cannon Mount (CBCArmInteractionPointTypes.CannonMountType). CBC's own type only
  * matches CBCBlocks.CANNON_MOUNT / FIXED_CANNON_MOUNT / CANNON_MOUNT_EXTENSION / YAW_CONTROLLER,
- * so our custom cbc_firecontrol:fire_control_mount block was NOT bindable to a Mechanical Arm.
+ * so our custom cbc_firecontrol:advanced_cannon_mount block was NOT bindable to a Mechanical Arm.
  *
  * We reuse CBC's public CannonMountPoint (DepositOnlyArmInteractionPoint): its insert() finds the
  * assembled cannon via ExtendsCannonMount.getCannonMount() -> mount.getContraption() and dispatches
@@ -36,10 +36,10 @@ public final class CBCFCArmInteractionPointTypes {
 
 	private static boolean registered = false;
 
-	public static class FireControlMountArmType extends ArmInteractionPointType {
+	public static class AdvancedCannonMountArmType extends ArmInteractionPointType {
 		@Override
 		public boolean canCreatePoint(Level level, BlockPos pos, BlockState state) {
-			return CBCFCBlocks.FIRE_CONTROL_MOUNT.has(state)
+			return CBCFCBlocks.ADVANCED_CANNON_MOUNT.has(state)
 					&& level.getBlockEntity(pos) instanceof CannonMountBlockEntity;
 		}
 
@@ -55,9 +55,9 @@ public final class CBCFCArmInteractionPointTypes {
 			return;
 		registered = true;
 		Registry.register(CreateBuiltInRegistries.ARM_INTERACTION_POINT_TYPE,
-				ResourceLocation.fromNamespaceAndPath(CBCFireControl.MODID, "fire_control_mount"),
-				new FireControlMountArmType());
-		CBCFireControl.LOGGER.info("CBC Fire Control: registered ArmInteractionPointType 'fire_control_mount' "
+				ResourceLocation.fromNamespaceAndPath(CBCFireControl.MODID, "advanced_cannon_mount"),
+				new AdvancedCannonMountArmType());
+		CBCFireControl.LOGGER.info("CBC Fire Control: registered ArmInteractionPointType 'advanced_cannon_mount' "
 				+ "(Mechanical Arm can load our radio mount; reuses CBC CannonMountPoint)");
 	}
 

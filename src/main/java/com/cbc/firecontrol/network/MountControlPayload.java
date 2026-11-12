@@ -7,7 +7,7 @@ import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 
-/** Client -> server: a console button pressed on a Fire Control Mount at {@code pos}. */
+/** Client -> server: a console button pressed on an Advanced Cannon Mount at {@code pos}. */
 public record MountControlPayload(BlockPos pos, MountAction action, int amount) implements CustomPacketPayload {
 
 	public static final Type<MountControlPayload> TYPE =

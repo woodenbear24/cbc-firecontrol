@@ -1,11 +1,15 @@
 package com.cbc.firecontrol.block;
 
 import com.cbc.firecontrol.init.CBCFCBlockEntities;
+import com.cbc.firecontrol.item.CalculatorLinkItem;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.ItemInteractionResult;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntityType;
@@ -23,7 +27,7 @@ import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlock;
 import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockEntity;
 
 /**
- * Fire Control Mount - half-slab variant of CBC's Cannon Mount Block.
+ * Advanced Cannon Mount - half-slab variant of CBC's Cannon Mount Block.
  *
  * Physical block occupancy is HALF the cell:
  *   VERTICAL_DIRECTION=DOWN (upright, base plate on floor, cannon above)  -> lower half [0,0,0]-[16,8,16]
@@ -35,7 +39,7 @@ import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockE
  * toward the cannon cell" while entities only collide with the plinth half.
  *
  * Cannon assembly position = 1 grid cell in the cannon direction (adjacent, not 2 like CBC's default).
- * See FireControlMountBlockEntity.assemble() and resetContraptionToOffset() for the -1 offset formula.
+ * See AdvancedCannonMountBlockEntity.assemble() and resetContraptionToOffset() for the -1 offset formula.
  *
  * Kinetic network (hasShaftTowards inherited from CannonMountBlock) unchanged: Create's connection logic
  * is logical (face predicate match), not physical overlap. Half-slab mount still validly accepts shafts
@@ -44,12 +48,12 @@ import rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockE
  * Wrench cycle (getRotatedBlockState), redstone-driven assembly/fire signals (neighborChanged/tick),
  * onPlace kinetic state preservation, and updateIndirectNeighbourShapes all inherited unchanged.
  */
-public class FireControlMountBlock extends CannonMountBlock {
+public class AdvancedCannonMountBlock extends CannonMountBlock {
 
 	private static final VoxelShape SHAPE_LOWER_HALF = Shapes.box(0, 0, 0, 1, 0.5, 1);
 	private static final VoxelShape SHAPE_UPPER_HALF = Shapes.box(0, 0.5, 0, 1, 1, 1);
 
-	public FireControlMountBlock(Properties properties) {
+	public AdvancedCannonMountBlock(Properties properties) {
 		super(properties);
 	}
 
@@ -66,7 +70,7 @@ public class FireControlMountBlock extends CannonMountBlock {
 	/** Override ONLY the BE type to point at our own registered BlockEntityType. */
 	@Override
 	public BlockEntityType<? extends CannonMountBlockEntity> getBlockEntityType() {
-		return CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get();
+		return CBCFCBlockEntities.ADVANCED_CANNON_MOUNT_BE.get();
 	}
 
 	/**
@@ -81,13 +85,29 @@ public class FireControlMountBlock extends CannonMountBlock {
 	public InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hit) {
 		if (player.getMainHandItem().isEmpty() && player.getOffhandItem().isEmpty()) {
 			if (!level.isClientSide
-					&& level.getBlockEntity(pos) instanceof com.cbc.firecontrol.block.entity.FireControlMountBlockEntity mount
+					&& level.getBlockEntity(pos) instanceof com.cbc.firecontrol.block.entity.AdvancedCannonMountBlockEntity mount
 					&& player instanceof net.minecraft.server.level.ServerPlayer serverPlayer) {
 				serverPlayer.openMenu(mount, buf -> buf.writeBlockPos(pos));
 			}
 			return InteractionResult.sidedSuccess(level.isClientSide);
 		}
 		return super.useWithoutItem(state, level, pos, player, hit);
+	}
+
+	/**
+	 * Right-clicking the mount while holding a {@link CalculatorLinkItem} links / unlinks this mount to the
+	 * held item (server-side {@link CalculatorLinkItem#applyLink}; sneak-right-click removes this mount).
+	 * Every other held item (wrench, shaft, block, ...) falls through to CBC's default handling unchanged.
+	 */
+	@Override
+	public ItemInteractionResult useItemOn(ItemStack stack, BlockState state, Level level, BlockPos pos,
+			Player player, InteractionHand hand, BlockHitResult hitResult) {
+		if (stack.getItem() instanceof CalculatorLinkItem) {
+			if (!level.isClientSide)
+				CalculatorLinkItem.applyLink(stack, level, pos, player);
+			return ItemInteractionResult.sidedSuccess(level.isClientSide);
+		}
+		return super.useItemOn(stack, state, level, pos, player, hand, hitResult);
 	}
 
     /**

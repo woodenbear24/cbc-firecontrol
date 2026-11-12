@@ -1,0 +1,327 @@
+package com.cbc.firecontrol.menu;
+
+import com.cbc.firecontrol.block.entity.TrajectoryCalculatorBlockEntity;
+import com.cbc.firecontrol.init.CBCFCMenus;
+import com.cbc.firecontrol.init.CBCItems;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+
+import net.neoforged.neoforge.items.IItemHandler;
+import net.neoforged.neoforge.items.ItemStackHandler;
+import net.neoforged.neoforge.items.SlotItemHandler;
+
+/**
+ * Menu of the Trajectory Calculator: five real inventory slots (one {@code calculator_link} card each) over
+ * the player inventory. Slot geometry constants live here so the menu and the screen agree on the same
+ * pixels, the same way {@link MountFrequencyMenu} / {@link com.cbc.firecontrol.client.MountFrequencyScreen}
+ * share the mount panel geometry.
+ *
+ * <p>Both sides construct with the calculator's {@link BlockPos}: the server writes it into the menu buffer
+ * through {@code Player#openMenu(MenuProvider, BlockPos)}, the client reads it back. Each side then resolves
+ * the {@link IItemHandler} from the block entity it has locally - the server BE's handler (authoritative, and
+ * the one whose {@code onContentsChanged} arms a recomputation) or the client BE's synced copy. When the BE
+ * is unreachable a fixed-size empty handler is substituted so the slot COUNT can never diverge between the
+ * two sides, which is the classic source of ghost-slot desyncs.
+ */
+public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
+
+	public static final int SLOTS = TrajectoryCalculatorBlockEntity.SLOTS;
+	public static final int CHANNELS = TrajectoryCalculatorBlockEntity.CHANNELS_PER_SLOT;
+	public static final int CHANNEL_ITEM_SLOTS = TrajectoryCalculatorBlockEntity.CHANNEL_ITEM_SLOTS;
+
+	/**
+	 * Slot ranges. The player inventory comes FIRST (indices 0..35) so vanilla's Shift+1..9 swap resolves
+	 * through getSlot(button) to the hotbar, exactly as it does in every other container - putting the card
+	 * slots at 0..4 would have made those keys swap against card slots instead.
+	 */
+	public static final int PLAYER_SLOT_COUNT = 36;
+	public static final int CARD_SLOT_START = PLAYER_SLOT_COUNT;               /* 36..40        */
+	public static final int CHANNEL_SLOT_START = CARD_SLOT_START + SLOTS;      /* 41..90        */
+
+	/** Window-local geometry, shared with the screen. Link slots form one column; readouts sit to their right. */
+	public static final int LINK_SLOT_X = 14;
+	/** Rows start below the target-entry strip, which occupies {@code TARGET_STRIP_Y..TARGET_STRIP_BOTTOM}. */
+	public static final int LINK_SLOT_Y = 52;
+	public static final int LINK_SLOT_SPACING = 24;
+	/** Target-entry strip (absolute world coordinates of the point to engage), shared with the screen. */
+	public static final int TARGET_STRIP_Y = 26;
+	public static final int TARGET_FIELD_H = 20;
+	public static final int TARGET_X_FIELD_X = 18;
+	public static final int TARGET_Y_FIELD_X = 88;
+	public static final int TARGET_Z_FIELD_X = 158;
+	public static final int TARGET_FIELD_W = 52;
+	public static final int TARGET_SET_X = 214;
+	public static final int TARGET_CLEAR_X = 248;
+	/** Aim button, right of CLEAR: slew every mount this calculator records to its row's solved aim. */
+	public static final int TARGET_AIM_X = 286;
+	/** Live echo of the target currently stored in the block entity. */
+	public static final int TARGET_ECHO_X = 312;
+	public static final int TARGET_ECHO_W = 98;
+	/** The recessed band behind the strip reaches this far above the fields and below them. */
+	public static final int TARGET_STRIP_PAD_TOP = 5;
+	public static final int TARGET_STRIP_PAD_BOTTOM = 8;
+	/**
+	 * Window-local y the strip band - and the divider drawn under it - ends at. The readout rows must not start
+	 * above this, or their backdrop paints over the divider and the two blocks read as one.
+	 */
+	public static final int TARGET_STRIP_BOTTOM = TARGET_STRIP_Y - TARGET_STRIP_PAD_TOP + TARGET_FIELD_H
+			+ TARGET_STRIP_PAD_BOTTOM;
+	/** Each channel is its two filter slots side by side (18 + 18 + 4 gutter), 5 channels per row. */
+	public static final int CHANNEL_SLOT_X = 212;
+	public static final int CHANNEL_COLUMN_SPACING = 40;
+	/**
+	 * Vertical offset of a channel pair inside its row strip. Zero puts the filter slots exactly where the card
+	 * slot is, which is also what centres their 20 pixel backdrop inside the row band (ROW_BAND_*) instead of
+	 * letting it hang 4 pixels below the row it belongs to.
+	 */
+	public static final int CHANNEL_Y_OFFSET = 0;
+	/** A readout row's backdrop starts this far above its card slot and is this tall. */
+	public static final int ROW_BAND_INSET = 1;
+	public static final int ROW_BAND_H = 20;
+	/**
+	 * How wide one readout row line may be before it would print over the channel grid: from the text column
+	 * (right of the card slot, at {@code LINK_SLOT_X + 34}) to the leftmost filter backdrop, which sits at
+	 * {@code CHANNEL_SLOT_X - 16}.
+	 */
+	public static final int ROW_TEXT_W = CHANNEL_SLOT_X - 16 - (LINK_SLOT_X + 34);
+
+	public static final int PANEL_WIDTH = 416;
+	/**
+	 * The last row band ends at LINK_SLOT_Y - ROW_BAND_INSET + 4 * LINK_SLOT_SPACING + ROW_BAND_H = 167, and the
+	 * 9 pixels left over are the visual gap under the last row.
+	 */
+	public static final int PANEL_HEIGHT = 176;
+	public static final int PLAYER_INV_X = 8;
+	public static final int PLAYER_INV_Y = PANEL_HEIGHT + 8;
+	public static final int PLAYER_INV_H = 104;
+	private static final int PLAYER_SLOT_X = PLAYER_INV_X + 8;
+	private static final int PLAYER_SLOT_Y = PLAYER_INV_Y + 14;
+	/** 3 inventory rows (3 * 18) + the 4 pixel vanilla gap, then the hotbar row. */
+	private static final int HOTBAR_Y = PLAYER_SLOT_Y + 58;
+
+	private final BlockPos pos;
+	private final Inventory playerInventory;
+	private final IItemHandler handler;
+	/**
+	 * Menu-local copy of the block entity's channel filters (nothing is ever consumed from the player). The
+	 * server pushes this into the BE, the BE re-registers its link transmitters and syncs back through the
+	 * block entity data packet - the same flow MountFrequencyMenu uses for the mount radio.
+	 */
+	private final ItemStackHandler ghostHandler = new ItemStackHandler(CHANNEL_ITEM_SLOTS);
+
+	public TrajectoryCalculatorMenu(int containerId, Inventory playerInventory, BlockPos pos) {
+		super(CBCFCMenus.TRAJECTORY_CALCULATOR.get(), containerId);
+		this.pos = pos;
+		this.playerInventory = playerInventory;
+
+		IItemHandler resolved = null;
+		Level level = playerInventory.player.level();
+		if (level.getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity be) {
+			resolved = be.getInventory();
+			ItemStack[] fromBE = be.getSlotChannelItems();
+			for (int i = 0; i < ghostHandler.getSlots() && i < fromBE.length; i++)
+				ghostHandler.setStackInSlot(i, fromBE[i].copy());
+		}
+		// A fixed-size handler on both sides keeps the slot COUNT identical, which is the classic
+		// source of ghost-slot desyncs when one side falls back to something else.
+		this.handler = resolved != null ? resolved : new ItemStackHandler(SLOTS);
+
+		for (int row = 0; row < 3; row++)
+			for (int col = 0; col < 9; col++)
+				addSlot(new Slot(playerInventory, col + row * 9 + 9, PLAYER_SLOT_X + col * 18, PLAYER_SLOT_Y + row * 18));
+		for (int col = 0; col < 9; col++)
+			addSlot(new Slot(playerInventory, col, PLAYER_SLOT_X + col * 18, HOTBAR_Y));
+
+		for (int i = 0; i < SLOTS; i++) {
+			addSlot(new SlotItemHandler(handler, i, LINK_SLOT_X, LINK_SLOT_Y + LINK_SLOT_SPACING * i) {
+				@Override
+				public boolean mayPlace(ItemStack stack) {
+					return stack.is(CBCItems.CALCULATOR_LINK.asItem());
+				}
+
+				@Override
+				public int getMaxStackSize() {
+					// Cards already stacksTo(1); restating it keeps the "one card identifies one mount" contract
+					// even if a datapack ever raises the item's stack size.
+					return 1;
+				}
+			});
+		}
+
+		for (int slot = 0; slot < SLOTS; slot++) {
+			for (int channel = 0; channel < CHANNELS; channel++) {
+				int baseX = CHANNEL_SLOT_X + channel * CHANNEL_COLUMN_SPACING;
+				for (int filter = 0; filter < TrajectoryCalculatorBlockEntity.FILTERS_PER_CHANNEL; filter++) {
+					int index = TrajectoryCalculatorBlockEntity.channelIndex(slot, channel, filter);
+					addSlot(new GhostSlot(ghostHandler, index, baseX + filter * 18,
+							LINK_SLOT_Y + LINK_SLOT_SPACING * slot + CHANNEL_Y_OFFSET));
+				}
+			}
+		}
+	}
+
+	/**
+	 * Ghost slot: accepts any item as a channel filter and never consumes it. Consuming would be wrong here -
+	 * the item IS the frequency definition, and one filter item is meant to configure several channels.
+	 */
+	private static final class GhostSlot extends SlotItemHandler {
+
+		GhostSlot(IItemHandler handler, int index, int x, int y) {
+			super(handler, index, x, y);
+		}
+
+		@Override
+		public boolean mayPlace(ItemStack stack) {
+			return true;
+		}
+
+		@Override
+		public int getMaxStackSize() {
+			return 1;
+		}
+
+		@Override
+		public boolean mayPickup(Player player) {
+			// Clearing a filter goes through clicked()/quickMoveStack, which copies rather than moves.
+			return false;
+		}
+
+		@Override
+		public void onQuickCraft(ItemStack stack, int amount) {
+		}
+	}
+
+	/**
+	 * Channel clicks follow Create's own ghost-slot rules (GhostItemMenu#clicked): the item held is COPIED
+	 * into the filter slot instead of moved, throwing is ignored, and creative middle-click clones the filter
+	 * out to the cursor. Real card slots keep vanilla behaviour.
+	 */
+	@Override
+	public void clicked(int slotId, int dragType, ClickType clickType, Player player) {
+		if (slotId < CHANNEL_SLOT_START) {
+			super.clicked(slotId, dragType, clickType, player);
+			return;
+		}
+		if (clickType == ClickType.THROW || clickType == ClickType.SWAP)
+			return;
+
+		int channelIndex = slotId - CHANNEL_SLOT_START;
+		if (clickType == ClickType.CLONE) {
+			if (player.getAbilities().instabuild && getCarried().isEmpty()) {
+				ItemStack cloned = ghostHandler.getStackInSlot(channelIndex).copy();
+				cloned.setCount(cloned.getMaxStackSize());
+				setCarried(cloned);
+			}
+			return;
+		}
+
+		ItemStack held = getCarried();
+		ItemStack filter = held.isEmpty() ? ItemStack.EMPTY : held.copy();
+		if (!filter.isEmpty())
+			filter.setCount(1);
+		ghostHandler.setStackInSlot(channelIndex, filter);
+		getSlot(slotId).setChanged();
+		pushChannels();
+	}
+
+	/**
+	 * Shift-click semantics: a player card moves into an empty card slot; any other player item copies into
+	 * the first free channel filter (configuring a channel is a copy, never a move); a card in a card slot
+	 * moves back to the player inventory; shift-clicking a channel filter clears it.
+	 */
+	@Override
+	public ItemStack quickMoveStack(Player player, int index) {
+		if (index >= CHANNEL_SLOT_START) {
+			ghostHandler.setStackInSlot(index - CHANNEL_SLOT_START, ItemStack.EMPTY);
+			getSlot(index).setChanged();
+			pushChannels();
+			return ItemStack.EMPTY;
+		}
+
+		Slot slot = this.slots.get(index);
+		if (!slot.hasItem())
+			return ItemStack.EMPTY;
+
+		ItemStack slotStack = slot.getItem();
+		ItemStack copy = slotStack.copy();
+
+		if (index >= CARD_SLOT_START) {
+			// Out of a card slot into the player inventory, hotbar first (fromLast walks the range backwards).
+			if (!moveItemStackTo(slotStack, 0, CARD_SLOT_START, true))
+				return ItemStack.EMPTY;
+		} else {
+			boolean movedToCardSlot = slotStack.is(CBCItems.CALCULATOR_LINK.asItem())
+					&& moveItemStackTo(slotStack, CARD_SLOT_START, CHANNEL_SLOT_START, false);
+			if (!movedToCardSlot) {
+				for (int i = 0; i < ghostHandler.getSlots(); i++) {
+					if (!ghostHandler.getStackInSlot(i).isEmpty())
+						continue;
+					ItemStack filter = copy.copy();
+					filter.setCount(1);
+					ghostHandler.setStackInSlot(i, filter);
+					getSlot(CHANNEL_SLOT_START + i).setChanged();
+					pushChannels();
+					break;
+				}
+			}
+		}
+
+		if (slotStack.isEmpty())
+			slot.set(ItemStack.EMPTY);
+		else
+			slot.setChanged();
+		return copy;
+	}
+
+	@Override
+	public boolean stillValid(Player player) {
+		if (!(player.level().getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity be))
+			return false;
+		return be.canPlayerUse(player);
+	}
+
+	public BlockPos getCalculatorPos() {
+		return pos;
+	}
+
+	public IItemHandler getHandler() {
+		return handler;
+	}
+
+	public ItemStackHandler getGhostHandler() {
+		return ghostHandler;
+	}
+
+	/** Server side only: hand the menu-local filter copies to the block entity, which re-registers and syncs. */
+	private void pushChannels() {
+		Level level = playerInventory.player.level();
+		if (level.isClientSide())
+			return;
+		if (!(level.getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity be))
+			return;
+		ItemStack[] snapshot = new ItemStack[ghostHandler.getSlots()];
+		for (int i = 0; i < snapshot.length; i++)
+			snapshot[i] = ghostHandler.getStackInSlot(i);
+		be.setSlotChannelItems(snapshot);
+	}
+
+	@Override
+	public boolean canTakeItemForPickAll(ItemStack stack, Slot slotIn) {
+		// Double-click pick-out / pick-into must never touch the channel filters.
+		return slotIn.container == playerInventory;
+	}
+
+	@Override
+	public boolean canDragTo(Slot slotIn) {
+		// Vanilla drag-distribute MOVES items; channel filters must only ever be copies, so dragging is limited
+		// to the player inventory and the real card slots.
+		return slotIn.container == playerInventory || slotIn.index < CHANNEL_SLOT_START;
+	}
+}

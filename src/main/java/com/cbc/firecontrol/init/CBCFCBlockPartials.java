@@ -13,7 +13,7 @@ import net.minecraft.resources.ResourceLocation;
  * <ul>
  *   <li>{@link #FIRE_CONTROL_ROTATING}: user's own trunnion-cradle turntable geometry authored
  *       in Blockbench at {@code .cbc_src/fire_control_rotating.bbmodel}, exported as
- *       {@code assets/cbc_firecontrol/models/block/fire_control_mount/fire_control_rotating.json}.
+ *       {@code assets/cbc_firecontrol/models/block/advanced_cannon_mount/fire_control_rotating.json}.
  *       The FBModel JSON mirrors the bbmodel export exactly (same 9 cubes, same Y 0..20 model
  *       coords, same autouv-absolute UV rects, same rotation origins) except for one texture
  *       alias addition: Blockbench exported every face as {@code "texture": "#missing"} because
@@ -39,7 +39,7 @@ public class CBCFCBlockPartials {
 	/**
 	 * User's own custom turntable partial authored in Blockbench at
 	 * {@code .cbc_src/fire_control_rotating.bbmodel}. Model coord space Y = 0..20 (matches the
-	 * bbmodel export exactly). Placed by {@link com.cbc.firecontrol.client.FireControlMountVisual}
+	 * bbmodel export exactly). Placed by {@link com.cbc.firecontrol.client.AdvancedCannonMountVisual}
 	 * at the assembly cell corner (world Y = 1 for upright mount, Y = -1 for upside-down mount).
 	 * Under this positioning the turntable plate bottom sits at world Y = 1, i.e. exactly on the
 	 * mount cell top boundary, leaving a 0.5-block visible gap between the plinth top (world 0.5,
@@ -47,17 +47,17 @@ public class CBCFCBlockPartials {
 	 * v0.0.2 onwards, matching how CBC's own cannon mount reads when its full-block top surface is
 	 * flush against the mount block but our half-slab variant naturally shows a small pedestal gap.
 	 * If the user later asks for plate-on-plinth visual, the fix is to change
-	 * {@link com.cbc.firecontrol.client.FireControlMountBERenderer#renderSafe} translate Y from 1.0
+	 * {@link com.cbc.firecontrol.client.AdvancedCannonMountBERenderer#renderSafe} translate Y from 1.0
 	 * to 0.5 and add a matching fractional Y offset in the visualizer's instance.position(...) call
 	 * (do NOT edit the model file Y coordinates, they must stay as exported from bbmodel).
 	 */
 	public static final PartialModel FIRE_CONTROL_ROTATING =
 			PartialModel.of(ResourceLocation.fromNamespaceAndPath(
-					CBCFireControl.MODID, "block/fire_control_mount/fire_control_rotating"));
+					CBCFireControl.MODID, "block/advanced_cannon_mount/fire_control_rotating"));
 
 	/**
-	 * Our own carriage_axle partial. Referenced by {@link com.cbc.firecontrol.client.FireControlMountVisual}
-	 * and {@link com.cbc.firecontrol.client.FireControlMountBERenderer} instead of CBC's
+	 * Our own carriage_axle partial. Referenced by {@link com.cbc.firecontrol.client.AdvancedCannonMountVisual}
+	 * and {@link com.cbc.firecontrol.client.AdvancedCannonMountBERenderer} instead of CBC's
 	 * {@code CBCBlockPartials.CANNON_CARRIAGE_AXLE}. Reason: CBC's carriage_axle.json uses
 	 * "parent": "createbigcannons:block/cannon_carriage/textures" to bring in texture aliases
 	 * (#axis, #axis_top -> create:block/axis etc.). When Flywheel's PartialModel pipeline bakes
@@ -70,7 +70,7 @@ public class CBCFCBlockPartials {
 	 */
 	public static final PartialModel CARRIAGE_AXLE =
 			PartialModel.of(ResourceLocation.fromNamespaceAndPath(
-					CBCFireControl.MODID, "block/fire_control_mount/carriage_axle"));
+					CBCFireControl.MODID, "block/advanced_cannon_mount/carriage_axle"));
 
 	/** Empty no-op referenced from CBCFireControl's clientSetupDiag to force class-init before
 	 * Flywheel's ModelEvent.RegisterAdditional runs, so our partials are added to

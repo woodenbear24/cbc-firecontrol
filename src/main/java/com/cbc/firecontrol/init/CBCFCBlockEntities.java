@@ -1,9 +1,10 @@
 package com.cbc.firecontrol.init;
 
 import com.cbc.firecontrol.CBCFireControl;
-import com.cbc.firecontrol.block.entity.FireControlMountBlockEntity;
-import com.cbc.firecontrol.client.FireControlMountBERenderer;
-import com.cbc.firecontrol.client.FireControlMountVisual;
+import com.cbc.firecontrol.block.entity.AdvancedCannonMountBlockEntity;
+import com.cbc.firecontrol.block.entity.TrajectoryCalculatorBlockEntity;
+import com.cbc.firecontrol.client.AdvancedCannonMountBERenderer;
+import com.cbc.firecontrol.client.AdvancedCannonMountVisual;
 import com.tterrag.registrate.util.entry.BlockEntityEntry;
 
 /**
@@ -22,7 +23,7 @@ import com.tterrag.registrate.util.entry.BlockEntityEntry;
  *
  * Similarly CBC's CannonMountBlockEntityRenderer fallback hardcodes a carriage-axle visual at
  * translate(0, ±2, 0) inside renderSafe(); that too would appear past the cannon in empty air for
- * our layout. Ours (FireControlMountBERenderer) drops it (rarely invoked in practice — Flywheel
+ * our layout. Ours (AdvancedCannonMountBERenderer) drops it (rarely invoked in practice — Flywheel
  * is Create's hard dependency, so BERenderer path is skipped when Flywheel is available).
  *
  * CreateRegistrate auto-wires visuals/renderers through Create's CreateRegistrateRegistrationCallback;
@@ -30,12 +31,23 @@ import com.tterrag.registrate.util.entry.BlockEntityEntry;
  */
 public class CBCFCBlockEntities {
 
-	public static final BlockEntityEntry<FireControlMountBlockEntity> FIRE_CONTROL_MOUNT_BE =
+	public static final BlockEntityEntry<AdvancedCannonMountBlockEntity> ADVANCED_CANNON_MOUNT_BE =
 			CBCFireControl.REGISTRATE
-					.blockEntity("fire_control_mount", FireControlMountBlockEntity::new)
-					.visual(() -> FireControlMountVisual::new)
-					.renderer(() -> FireControlMountBERenderer::new)
-					.validBlock(CBCFCBlocks.FIRE_CONTROL_MOUNT)
+					.blockEntity("advanced_cannon_mount", AdvancedCannonMountBlockEntity::new)
+					.visual(() -> AdvancedCannonMountVisual::new)
+					.renderer(() -> AdvancedCannonMountBERenderer::new)
+					.validBlock(CBCFCBlocks.ADVANCED_CANNON_MOUNT)
+					.register();
+
+	/**
+	 * Trajectory Calculator BE: 5 calculator_link slots + the server-computed firing solutions. No visual or
+	 * BE renderer is attached - the calculator is a static model already wired through blockstates, and its
+	 * output is GUI text rather than geometry.
+	 */
+	public static final BlockEntityEntry<TrajectoryCalculatorBlockEntity> TRAJECTORY_CALCULATOR_BE =
+			CBCFireControl.REGISTRATE
+					.blockEntity("trajectory_calculator", TrajectoryCalculatorBlockEntity::new)
+					.validBlock(CBCFCBlocks.TRAJECTORY_CALCULATOR)
 					.register();
 
 	/** Empty no-op referenced from CBCFireControl's constructor to force class-init. */

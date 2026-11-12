@@ -1,7 +1,10 @@
 package com.cbc.firecontrol.network;
 
-import com.cbc.firecontrol.block.entity.FireControlMountBlockEntity;
+import com.cbc.firecontrol.block.entity.AdvancedCannonMountBlockEntity;
+import com.cbc.firecontrol.block.entity.TrajectoryCalculatorBlockEntity;
 import com.cbc.firecontrol.client.MountFrequencyScreen;
+import com.cbc.firecontrol.network.CalculatorAimPayload;
+import com.cbc.firecontrol.network.CalculatorTargetPayload;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
@@ -22,7 +25,7 @@ public class CBCFCNetwork {
 			double dz = pos.getZ() + 0.5 - player.getZ();
 			if (dx * dx + dy * dy + dz * dz > 64.0 * 64.0)
 				return;
-			if (!(level.getBlockEntity(pos) instanceof FireControlMountBlockEntity mount))
+			if (!(level.getBlockEntity(pos) instanceof AdvancedCannonMountBlockEntity mount))
 				return;
 
 			switch (payload.action()) {
@@ -36,6 +39,37 @@ public class CBCFCNetwork {
 
 			PacketDistributor.sendToPlayer(player, new MountStatePayload(
 					pos, mount.isRunning(), mount.consoleYaw(), mount.consolePitch()));
+		});
+	}
+
+	public static void handleCalculatorTarget(CalculatorTargetPayload payload, IPayloadContext context) {
+		context.enqueueWork(() -> {
+			if (!(context.player() instanceof ServerPlayer player))
+				return;
+			BlockPos pos = payload.pos();
+			if (!(player.level().getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity calculator))
+				return;
+			// The same authority rule the menu applies: only a player who can use this block edits its target.
+			if (!calculator.canPlayerUse(player))
+				return;
+			if (payload.clear())
+				calculator.clearTarget();
+			else
+				calculator.setTarget(payload.x(), payload.y(), payload.z());
+		});
+	}
+
+	public static void handleCalculatorAim(CalculatorAimPayload payload, IPayloadContext context) {
+		context.enqueueWork(() -> {
+			if (!(context.player() instanceof ServerPlayer player))
+				return;
+			BlockPos pos = payload.pos();
+			if (!(player.level().getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity calculator))
+				return;
+			// Same authority rule as the target entry: only a player who can use this block may order its mounts.
+			if (!calculator.canPlayerUse(player))
+				return;
+			calculator.applyAllAims(player);
 		});
 	}
 

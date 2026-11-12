@@ -6,9 +6,13 @@ import com.cbc.firecontrol.init.CBCFCBlockEntities;
 import com.cbc.firecontrol.init.CBCFCArmInteractionPointTypes;
 import com.cbc.firecontrol.init.CBCFCBlockPartials;
 import com.cbc.firecontrol.init.CBCFCBlocks;
+import com.cbc.firecontrol.init.CBCFCDisplaySources;
 import com.cbc.firecontrol.init.CBCFCCreativeTabs;
 import com.cbc.firecontrol.init.CBCFCMenus;
+import com.cbc.firecontrol.init.CBCItems;
 import com.cbc.firecontrol.network.CBCFCNetwork;
+import com.cbc.firecontrol.network.CalculatorAimPayload;
+import com.cbc.firecontrol.network.CalculatorTargetPayload;
 import com.cbc.firecontrol.network.MountControlPayload;
 import com.cbc.firecontrol.network.MountStatePayload;
 import com.mojang.logging.LogUtils;
@@ -75,13 +79,18 @@ public class CBCFireControl {
 		// CreateRegistrate chains will enqueue blocks/items/BEs (flushed via RegisterEvent
 		// later) and attach visualizer / renderer listeners to our mod bus immediately
 		// (since bus is non-null on those OneTimeEventReceiver.addModListener calls).
+		CBCFCDisplaySources.init();
 		CBCFCBlocks.init();
 		CBCFCBlockEntities.init();
+		// Items (data components + standalone item) run AFTER CBCFCBlocks so its static block has already
+		// nulled the default creative tab (keeps this item out of vanilla SEARCH auto-listing).
+		CBCItems.init();
 		// Arm interaction point is registered during RegisterEvent, NOT here (the
 		// create:arm_interaction_point_type registry is already frozen in the mod constructor).
 
 		// Creative tab uses plain NeoForge DeferredRegister (independent of CreateRegistrate).
 		CBCFCCreativeTabs.register(modEventBus);
+		CBCItems.DATA_COMPONENTS.register(modEventBus);
 		CBCFCMenus.register(modEventBus);
 
 		modEventBus.addListener(this::commonSetup);
@@ -111,7 +120,7 @@ public class CBCFireControl {
 		event.enqueueWork(() -> {
 			try {
 				CannonMountPropertiesHandler.registerBlockMountSerializer(
-						CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get(),
+						CBCFCBlockEntities.ADVANCED_CANNON_MOUNT_BE.get(),
 						new SimpleBlockMountProperties.Serializer());
 				LOGGER.info("CBC Fire Control: registered SimpleBlockMountProperties serializer for our mount BE");
 			} catch (IllegalStateException already) {
@@ -120,21 +129,25 @@ public class CBCFireControl {
 				LOGGER.warn("CBC Fire Control: mount properties serializer already registered: {}",
 						already.getMessage());
 			}
-			LOGGER.info("CBC Fire Control loaded — Fire Control Mount registered: {}",
-					CBCFCBlocks.FIRE_CONTROL_MOUNT.getId());
+			LOGGER.info("CBC Fire Control loaded — Advanced Cannon Mount registered: {}",
+					CBCFCBlocks.ADVANCED_CANNON_MOUNT.getId());
 		});
 	}
 
 	private void registerPackets(RegisterPayloadHandlersEvent event) {
 		PayloadRegistrar registrar = event.registrar(MODID);
 		registrar.playToServer(MountControlPayload.TYPE, MountControlPayload.STREAM_CODEC, CBCFCNetwork::handleControl);
+		registrar.playToServer(CalculatorTargetPayload.TYPE, CalculatorTargetPayload.STREAM_CODEC,
+				CBCFCNetwork::handleCalculatorTarget);
+		registrar.playToServer(CalculatorAimPayload.TYPE, CalculatorAimPayload.STREAM_CODEC,
+				CBCFCNetwork::handleCalculatorAim);
 		registrar.playToClient(MountStatePayload.TYPE, MountStatePayload.STREAM_CODEC, CBCFCNetwork::handleStateClient);
 		LOGGER.info("CBC Fire Control: registered mount-control payload handlers");
 	}
 
 	/**
 	 * Register an ItemHandler capability for our mount block entity so Create's
-	 * Mechanical Arm / Funnel / Depot can target the Fire Control Mount as an
+	 * Mechanical Arm / Funnel / Depot can target the Advanced Cannon Mount as an
 	 * interaction object. CBC only registers its own CANNON_MOUNT BE type
 	 * (see CBCCommonNeoForgeEvents.onRegisterCapabilities); our separate
 	 * BlockEntityType must register itself. The inherited getItemHandler(side)
@@ -153,9 +166,15 @@ public class CBCFireControl {
 
 	private static void onRegisterCapabilities(RegisterCapabilitiesEvent event) {
 		event.registerBlockEntity(Capabilities.ItemHandler.BLOCK,
-				CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get(),
+				CBCFCBlockEntities.ADVANCED_CANNON_MOUNT_BE.get(),
 				(be, side) -> ((CBCHasIItemHandlerBlockEntity) be).getItemHandler(side));
 		LOGGER.info("CBC Fire Control: registered ItemHandler.BLOCK capability for mount (Mechanical Arm / Funnel target)");
+		// The calculator's 5 link-card slots are a genuine IItemHandler, exposed here so the menu's
+		// SlotItemHandler views, hoppers and Create's arm/funnel tooling all see the same inventory.
+		event.registerBlockEntity(Capabilities.ItemHandler.BLOCK,
+				CBCFCBlockEntities.TRAJECTORY_CALCULATOR_BE.get(),
+				(be, side) -> be.getInventory());
+		LOGGER.info("CBC Fire Control: registered ItemHandler.BLOCK capability for trajectory calculator (5 link slots)");
 	}
 
 	private void clientSetupDiag(FMLClientSetupEvent event) {
@@ -172,7 +191,7 @@ public class CBCFireControl {
 				CBCFireControl.MODID, CBCFireControl.MODID);
 
 		event.enqueueWork(() -> {
-			var beType = CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get();
+			var beType = CBCFCBlockEntities.ADVANCED_CANNON_MOUNT_BE.get();
 			BlockEntityVisualizer<?> visualizer = VisualizerRegistry.getVisualizer(beType);
 			if (visualizer == null) {
 				LOGGER.warn("Flywheel visualizer lookup for {} -> NULL (no visualizer registered)",
@@ -217,12 +236,12 @@ public class CBCFireControl {
 		// Diagnostic: query CannonMountPropertiesHandler for our mount + each cannon type.
 		// Data pack reload listeners ran during resource load (before ServerStartingEvent),
 		// so BLOCK_MOUNT_PROPERTIES should already be populated with entries parsed from
-		// our data/cbc_firecontrol/cannon_mounts/block_entities/fire_control_mount/** JSONs.
+		// our data/cbc_firecontrol/cannon_mounts/block_entities/advanced_cannon_mount/** JSONs.
 		// If lookup returns elevation=0/depression=0, our JSONs were not loaded (serializer
 		// registered too late, BE registry key mismatch, or reload listener hit an exception).
 		try {
-			var ourBEType = CBCFCBlockEntities.FIRE_CONTROL_MOUNT_BE.get();
-			var dummyState = CBCFCBlocks.FIRE_CONTROL_MOUNT.get().defaultBlockState();
+			var ourBEType = CBCFCBlockEntities.ADVANCED_CANNON_MOUNT_BE.get();
+			var dummyState = CBCFCBlocks.ADVANCED_CANNON_MOUNT.get().defaultBlockState();
 			for (String cannonTypeName : new String[] { "big_cannon", "autocannon", "drop_mortar", "handle_autocannon" }) {
 				var contraptionType = CannonContraptionTypeRegistry.getOptional(
 						ResourceLocation.fromNamespaceAndPath("createbigcannons", cannonTypeName));
@@ -234,7 +253,7 @@ public class CBCFireControl {
 				float elev = props.maximumElevation(null, dummyState, null);
 				float dep = props.maximumDepression(null, dummyState, null);
 				LOGGER.info("Mount properties [{} + {}]: elev={} dep={} {}",
-						"cbc_firecontrol:fire_control_mount", cannonTypeName, elev, dep,
+						"cbc_firecontrol:advanced_cannon_mount", cannonTypeName, elev, dep,
 						(elev == 0 && dep == 0) ? " <-- FALLBACK (JSON not loaded!)" : " <-- loaded OK");
 			}
 		} catch (Throwable t) {

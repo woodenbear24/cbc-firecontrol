@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=east":  { "model": "cbc_firecontrol:block/trajectory_calculator", "y": 270 },
+    "facing=west":  { "model": "cbc_firecontrol:block/trajectory_calculator", "y": 90 },
+    "facing=north": { "model": "cbc_firecontrol:block/trajectory_calculator", "y": 180 },
+    "facing=south": { "model": "cbc_firecontrol:block/trajectory_calculator" }
+  }
+}
