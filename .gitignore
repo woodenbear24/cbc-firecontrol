@@ -62,6 +62,10 @@ run_client.ps1
 
 ### Scratch reference exports from item-model authoring (the tracked copies live under src/main/resources) ###
 calculator_link.png
+binoculars_scope.png
+vanilla_spyglass_scope.png
+args_probe.json
+args_proj.json
 
 
 ### Local reference copy of CBC upstream sources (for API lookup during dev only) ###

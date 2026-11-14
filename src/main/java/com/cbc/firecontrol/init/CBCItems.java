@@ -3,7 +3,8 @@ package com.cbc.firecontrol.init;
 import com.cbc.firecontrol.CBCFireControl;
 import com.cbc.firecontrol.item.CalculatorLinkData;
 import com.cbc.firecontrol.item.CalculatorLinkItem;
-import com.cbc.firecontrol.item.TelescopeItem;
+import com.cbc.firecontrol.item.TargetDesignatorItem;
+import com.cbc.firecontrol.item.TargetDesignatorLinkData;
 import com.tterrag.registrate.util.entry.ItemEntry;
 
 import net.minecraft.core.component.DataComponentType;
@@ -31,6 +32,14 @@ public class CBCItems {
 					.cacheEncoding()
 					.build());
 
+	/** Data component holding a Designator's bound Trajectory Calculator (see TargetDesignatorLinkData). */
+	public static final DeferredHolder<DataComponentType<?>, DataComponentType<TargetDesignatorLinkData>> TARGET_DESIGNATOR_LINK_DATA =
+			DATA_COMPONENTS.register("target_designator_link", () -> DataComponentType.<TargetDesignatorLinkData>builder()
+					.persistent(TargetDesignatorLinkData.CODEC)
+					.networkSynchronized(TargetDesignatorLinkData.STREAM_CODEC)
+					.cacheEncoding()
+					.build());
+
 	public static final ItemEntry<CalculatorLinkItem> CALCULATOR_LINK =
 			CBCFireControl.REGISTRATE
 					.item("calculator_link", CalculatorLinkItem::new)
@@ -38,12 +47,12 @@ public class CBCItems {
 					.lang("Calculator Link")
 					.register();
 
-	/** Behavioural copy of {@code minecraft:spyglass} (see TelescopeItem for what is reused from vanilla). */
-	public static final ItemEntry<TelescopeItem> TELESCOPE =
+	/** Behavioural copy of {@code minecraft:spyglass} (see TargetDesignatorItem for what is reused from vanilla). */
+	public static final ItemEntry<TargetDesignatorItem> TARGET_DESIGNATOR =
 			CBCFireControl.REGISTRATE
-					.item("telescope", TelescopeItem::new)
+					.item("target_designator", TargetDesignatorItem::new)
 					.properties(p -> p.stacksTo(1))
-					.lang("Telescope")
+					.lang("Target Designator")
 					.register();
 
 	/** Empty no-op referenced from CBCFireControl's constructor to force class-init. */

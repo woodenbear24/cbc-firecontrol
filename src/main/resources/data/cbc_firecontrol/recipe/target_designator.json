@@ -16,6 +16,6 @@
   ],
   "result": {
     "count": 1,
-    "id": "cbc_firecontrol:telescope"
+    "id": "cbc_firecontrol:target_designator"
   }
 }

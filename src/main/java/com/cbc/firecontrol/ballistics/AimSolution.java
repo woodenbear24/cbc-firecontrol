@@ -11,7 +11,9 @@ import net.minecraft.world.phys.Vec3;
  * <p>Angles use {@link InverseBallistics}'s direction convention (see {@code directionFromAngles}), NOT the
  * mount's console values - converting a solution into console yaw/pitch deltas is the wiring step, and the
  * {@link #yawDelta(MountSnapshot)} / {@link #pitchDelta(MountSnapshot)} helpers carry the correction relative
- * to how the mount is aimed right now.
+ * to how the mount is aimed right now. Those helpers re-derive the mount's CURRENT angle from the scanned
+ * barrel direction rather than reading the snapshot's console angles, because the two conventions do not agree
+ * on elevation (see {@link #pitchDelta(MountSnapshot)}).
  *
  * @param outcome         whether there is a solution at all, and why not if there is not
  * @param yawDeg          horizontal aim the solver fired along
@@ -95,16 +97,42 @@ public record AimSolution(
 		return arc.langKey();
 	}
 
-	/** How much yaw the mount still has to turn from where it is aimed now (wrapped to -180..180). */
+	/**
+	 * How much yaw the mount still has to turn from where it is aimed now (wrapped to -180..180).
+	 *
+	 * <p>The mount's current angle is re-derived from {@link MountSnapshot#direction()} - the scanned barrel's
+	 * world-space direction, which is the very convention these solutions are written in - rather than read off
+	 * {@link MountSnapshot#yawDeg()}. Console yaw happens to count the same way as {@link InverseBallistics#yawOf}
+	 * (CBC's cannonYaw runs SOUTH 0 -> WEST 90), so reading it would work by luck; reading the barrel works by
+	 * construction and also follows a mount that something other than this mod slewed.
+	 */
 	public double yawDelta(MountSnapshot snapshot) {
-		return normalizeDelta(yawDeg - snapshot.yawDeg());
+		return assembledDelta(snapshot,
+				normalizeDelta(yawDeg - InverseBallistics.yawOf(snapshot.direction())));
 	}
 
-	/** How much elevation the mount still has to change from where it is aimed now. */
+	/**
+	 * How much elevation the mount still has to change from where it is aimed now.
+	 *
+	 * <p>Re-derived from the scanned barrel for the same reason as {@link #yawDelta}, and here it is not a
+	 * stylistic choice: CBC stores the NEGATIVE of the world elevation for a mount assembled barrel-down
+	 * ({@code initialOrientation == DOWN}), so subtracting {@link MountSnapshot#pitchDeg()} would send an
+	 * inverted mount the wrong way instead of onto the solved aim.
+	 */
 	public double pitchDelta(MountSnapshot snapshot) {
-		return pitchDeg - snapshot.pitchDeg();
+		return assembledDelta(snapshot, pitchDeg - InverseBallistics.pitchOf(snapshot.direction()));
 	}
 
+	/**
+	 * A delta worth acting on only exists for a mount that has a cannon to aim. An unassembled snapshot
+	 * carries a zero direction, whose {@code atan2} reads as level due north, and reporting a correction
+	 * against that would suggest a slew a mount with no barrel cannot perform.
+	 */
+	private static double assembledDelta(MountSnapshot snapshot, double delta) {
+		return snapshot.assembled() ? delta : 0.0;
+	}
+
+	/** Wrap to -180..180 so a mount turns the short way round rather than chasing a full circle. */
 	private static double normalizeDelta(double value) {
 		double wrapped = value;
 		while (wrapped > 180.0)

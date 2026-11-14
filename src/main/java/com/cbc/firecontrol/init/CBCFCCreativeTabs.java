@@ -39,7 +39,7 @@ public class CBCFCCreativeTabs {
 						output.accept(CBCFCBlocks.ADVANCED_CANNON_MOUNT.get().asItem());
 						output.accept(CBCFCBlocks.TRAJECTORY_CALCULATOR.get().asItem());
 						output.accept(new ItemStack(CBCItems.CALCULATOR_LINK.get()));
-						output.accept(new ItemStack(CBCItems.TELESCOPE.get()));
+						output.accept(new ItemStack(CBCItems.TARGET_DESIGNATOR.get()));
 					})
 					.build());
 

@@ -15,12 +15,10 @@ public enum LinkStatus {
 	OK(true),
 	/** Solution ended by hitting a block. */
 	BLOCK_HIT(true),
-	/** Solution ended when the shot's flight time ran out (CBC autocannon lifetime / predict cap). */
+	/** Solution ended when the shot's flight time ran out (CBC autocannon lifetime, or the tick cap). */
 	LIFETIME_END(true),
 	/** Solution fell below the world. */
 	OUT_OF_WORLD(true),
-	/** Solution was cut off at the prediction range cap. */
-	TOO_FAR(true),
 	/** Linked mount position is not an Advanced Cannon Mount. */
 	NOT_A_MOUNT(false),
 	/** Linked mount's chunk is not loaded, so its assembled cannon cannot be inspected. */
@@ -30,7 +28,13 @@ public enum LinkStatus {
 	/** Mount found but no cannon is assembled on it (or the muzzle could not be resolved). */
 	NO_CANNON(false),
 	/** Cannon assembled but nothing pushable is loaded (charge power 0). */
-	NO_CHARGE(false);
+	NO_CHARGE(false),
+	/**
+	 * Assembled and loaded with powder, but CBC would not fire a shot: the bore holds no complete round, or
+	 * the charge cannot ignite it. NO_CHARGE says there is no powder; this says there is powder and nothing
+	 * to throw with it.
+	 */
+	NO_ROUND(false);
 
 	private final boolean hasSolution;
 

@@ -7,7 +7,7 @@
     "vertical_direction=down": {
       "pitch_range": {
         "maximum_depression": 30,
-        "maximum_elevation": 60
+        "maximum_elevation": 85
       }
     },
     "vertical_direction=up": {

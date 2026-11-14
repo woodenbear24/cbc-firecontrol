@@ -1,5 +1,7 @@
 package com.cbc.firecontrol.ballistics;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import com.cbc.firecontrol.block.entity.AdvancedCannonMountBlockEntity;
@@ -15,6 +17,7 @@ import rbasamoyai.createbigcannons.cannon_control.contraption.AbstractMountedCan
 import rbasamoyai.createbigcannons.cannon_control.contraption.MountedAutocannonContraption;
 import rbasamoyai.createbigcannons.cannon_control.contraption.PitchOrientedContraptionEntity;
 import rbasamoyai.createbigcannons.cannons.autocannon.AutocannonBarrelBlock;
+import rbasamoyai.createbigcannons.cannons.autocannon.breech.AbstractAutocannonBreechBlockEntity;
 import rbasamoyai.createbigcannons.cannons.autocannon.AutocannonBaseBlock;
 import rbasamoyai.createbigcannons.cannons.autocannon.material.AutocannonMaterial;
 import rbasamoyai.createbigcannons.cannons.autocannon.material.AutocannonMaterialProperties;
@@ -93,22 +96,52 @@ public final class MountScanner {
 		direction = direction.normalize();
 		Vec3 muzzle = muzzleRaw.subtract(direction.scale(2));
 
+		/*
+		 * Everything below is read in BORE ORDER, from the breech side toward the muzzle, because CBC's
+		 * fireShot walks the bore exactly that way and three of its rules depend on the order: an empty cell
+		 * before the round costs one charge point, the first propellant decides whether the load ignites at
+		 * all, and the round's completeness is judged on the blocks collected up to the muzzle. Reading the
+		 * loaded blocks as an unordered set (as this method used to) could not see any of that, which is why
+		 * an empty or half-loaded bore still reported a firing solution.
+		 */
 		double chargePower = 0.0;
 		String munitionKey = "";
-		for (BlockEntity raw : cannon.presentBlockEntities.values()) {
+		List<StructureBlockInfo> roundBlocks = new ArrayList<>();
+		ProjectileBlock<?> firstRoundBlock = null;
+		boolean ignitionChecked = false;
+		boolean ignitable = false;
+		for (int i = 0; i < walked; i++) {
+			BlockPos boreCell = cannon.getStartPos().relative(orientation, i);
+			BlockEntity raw = cannon.presentBlockEntities.get(boreCell);
 			if (!(raw instanceof IBigCannonBlockEntity cbe))
 				continue;
 			BigCannonBehavior behavior = cbe.cannonBehavior();
-			if (behavior == null)
+			StructureBlockInfo contained = behavior == null ? null : behavior.block();
+			if (contained == null || contained.state() == null)
 				continue;
-			StructureBlockInfo contained = behavior.block();
-			if (contained == null || contained.state() == null || contained.state().isAir())
+			Block loaded = contained.state().getBlock();
+			if (contained.state().isAir()) {
+				// CBC: chargesUsed = max(chargesUsed - 1, 0) for every empty cell met before a round is collected.
+				if (firstRoundBlock == null)
+					chargePower = Math.max(0.0, chargePower - 1.0);
 				continue;
-			Block block = contained.state().getBlock();
-			if (block instanceof BigCannonPropellantBlock propellant)
+			}
+			// A shell that is also propellant (integrated-propellant rounds) contributes to both, exactly as
+			// CBC adds addPropellant and then addIntegratedPropellant for the same block.
+			if (loaded instanceof BigCannonPropellantBlock propellant) {
+				if (!ignitionChecked) {
+					ignitionChecked = true;
+					ignitable = propellant.canBeIgnited(contained, orientation);
+				}
 				chargePower += Math.max(0.0f, propellant.getChargePower(contained));
-			if (munitionKey.isEmpty() && block instanceof ProjectileBlock<?>)
-				munitionKey = block.getDescriptionId();
+			}
+			if (loaded instanceof ProjectileBlock<?> projectile) {
+				if (firstRoundBlock == null) {
+					firstRoundBlock = projectile;
+					munitionKey = loaded.getDescriptionId();
+				}
+				roundBlocks.add(contained);
+			}
 		}
 
 		double speed;
@@ -117,6 +150,7 @@ public final class MountScanner {
 		double drag;
 		String materialKey = "";
 
+		RoundState round;
 		if (autocannon) {
 			AutocannonMaterialProperties props = material == null ? null : material.properties();
 			if (props == null)
@@ -130,16 +164,39 @@ public final class MountScanner {
 			maxFlightTicks = Math.max(1, props.projectileLifetime());
 			gravity = TrajectoryComputer.AUTOCANNON_GRAVITY;
 			drag = TrajectoryComputer.AUTOCANNON_DRAG;
+			/*
+			 * An autocannon's ammunition is an item stack in its breech block entity, not a block in the bore,
+			 * so the round is read from the breech itself. canFire() is CBC's own gate, which covers both the
+			 * loaded shell and whatever the breech considers blocking. A contraption with no breech entity is
+			 * treated as ready rather than empty: this scanner must not claim a gun cannot fire on evidence it
+			 * did not actually look at.
+			 */
+			AbstractAutocannonBreechBlockEntity breech = null;
+			for (BlockEntity raw : cannon.presentBlockEntities.values()) {
+				if (raw instanceof AbstractAutocannonBreechBlockEntity candidate) {
+					breech = candidate;
+					break;
+				}
+			}
+			round = breech == null || breech.canFire() ? RoundState.READY : RoundState.NO_ROUND;
 		} else {
 			// CBC passes the accumulated charge power straight to vanilla Projectile#shoot as launch speed.
 			speed = chargePower;
 			maxFlightTicks = TrajectoryComputer.MAX_PREDICT_TICKS;
 			gravity = TrajectoryComputer.BIG_CANNON_GRAVITY;
 			drag = TrajectoryComputer.BIG_CANNON_DRAG;
+			if (firstRoundBlock == null)
+				round = RoundState.NO_ROUND; // powder alone reaches fireShot with a null projectile: nothing fires
+			else if (!ignitionChecked || !ignitable)
+				round = RoundState.NOT_IGNITABLE;
+			else if (!firstRoundBlock.isComplete(roundBlocks, orientation))
+				round = RoundState.INCOMPLETE_ROUND;
+			else
+				round = RoundState.READY;
 		}
 
 		return new MountSnapshot(mountPos, true, autocannon, barrels, chargePower, speed, maxFlightTicks,
 				gravity, drag, false, muzzle, direction, munitionKey, materialKey,
-				mount.consoleYaw(), mount.consolePitch());
+				mount.consoleYaw(), mount.consolePitch(), round);
 	}
 }

@@ -101,6 +101,15 @@ public final class InverseBallistics {
 		if (planRange < MIN_PLAN_RANGE)
 			return AimSolution.failure(AimOutcome.INVALID_TARGET, snapshot, planRange, 0);
 		/*
+		 * Nothing to fire means nothing to solve: a bore with no complete round reaches CBC's fireShot and spawns
+		 * no projectile at all, so the row must say the load is wrong rather than hand back angles for a shot that
+		 * never leaves the muzzle. This check sits before the speed check on purpose - an empty bore with powder in
+		 * it has a charge to solve with and no shell to solve FOR.
+		 */
+		if (!snapshot.canFireNext())
+			return AimSolution.failure(AimOutcome.NO_ROUND, snapshot, planRange, 0);
+
+		/*
 		 * Both gun types need a launch speed, and for a big cannon that speed IS the charge CBC has
 		 * accumulated (MountScanner mirrors CBC passing the accumulated charge power straight to
 		 * Projectile#shoot), so a cannon with an empty powder charge has nothing to solve with.

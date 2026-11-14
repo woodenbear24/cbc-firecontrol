@@ -2,13 +2,16 @@ package com.cbc.firecontrol.block;
 
 import com.cbc.firecontrol.block.entity.TrajectoryCalculatorBlockEntity;
 import com.cbc.firecontrol.init.CBCFCBlockEntities;
+import com.cbc.firecontrol.item.TargetDesignatorItem;
 import com.simibubi.create.content.equipment.wrench.IWrenchable;
 import com.simibubi.create.foundation.block.IBE;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.Containers;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.ItemInteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.BlockPlaceContext;
@@ -24,9 +27,9 @@ import net.minecraft.world.level.block.state.properties.DirectionProperty;
 import net.minecraft.world.phys.BlockHitResult;
 
 /**
- * Trajectory Calculator - currently a purely decorative, placeable block that presents the
- * Blockbench model at .cbc_src/trajectory_calculator.bbmodel in-world. No ballistic computation
- * / block entity yet; that can be layered on later (see CBCFCBlocks registration + SKILL.md note).
+ * Trajectory Calculator - a placeable console built on the Blockbench model at
+ * .cbc_src/trajectory_calculator.bbmodel, holding the target point plus the firing solutions and aim orders for
+ * the mounts its link-card slots record.
  *
  * The modeled geometry (three cubes: a 16x1 base plate, a 16x2 mid slab inset on Z, and a tall
  * 13x10 panel body at z=8..16) has its "front" authored toward +Z, i.e. SOUTH, matching the same
@@ -43,6 +46,10 @@ import net.minecraft.world.phys.BlockHitResult;
  * (5 link-card slots + the server-computed firing solutions), and plain right-click with nothing in hand
  * opens that block's 5-slot console. Wrench behaviour is unchanged: Create routes the wrench interaction
  * before useWithoutItem, so wrench-rotate / sneak-pickup still win over opening the GUI.
+ *
+ * <p>Holding a Designator and right-clicking the console binds the designator to this console instead (see
+ * {@link TargetDesignatorItem#applyBind}); a bound designator then reports the block under its crosshair as this
+ * console's target with a middle click while scoping, and orders the linked mounts onto it.
  */
 public class TrajectoryCalculatorBlock extends Block implements IWrenchable, IBE<TrajectoryCalculatorBlockEntity> {
 
@@ -104,6 +111,23 @@ public class TrajectoryCalculatorBlock extends Block implements IWrenchable, IBE
 			return InteractionResult.CONSUME;
 		}
 		return InteractionResult.PASS;
+	}
+
+	/**
+	 * Holding a Designator and right-clicking this console binds the designator to it (or unbinds it, sneak) - see
+	 * {@link TargetDesignatorItem#applyBind}. Same shape as AdvancedCannonMountBlock's handling of the link card: the
+	 * item's own binding rules run server-side, and nothing else (wrench, a block being placed, a link card) is
+	 * affected, because everything that is not a designator falls through to the super.
+	 */
+	@Override
+	public ItemInteractionResult useItemOn(ItemStack stack, BlockState state, Level level, BlockPos pos, Player player,
+			InteractionHand hand, BlockHitResult hitResult) {
+		if (stack.getItem() instanceof TargetDesignatorItem) {
+			if (!level.isClientSide)
+				TargetDesignatorItem.applyBind(stack, level, pos, player);
+			return ItemInteractionResult.sidedSuccess(level.isClientSide);
+		}
+		return super.useItemOn(stack, state, level, pos, player, hand, hitResult);
 	}
 
 	@Override

@@ -93,6 +93,50 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	public static final int ROW_TEXT_W = CHANNEL_SLOT_X - 16 - (LINK_SLOT_X + 34);
 
 	public static final int PANEL_WIDTH = 416;
+
+	/*
+	 * Tabs. Their ids are part of the menu contract rather than a client detail: the screen shows one page at a
+	 * time and tells the server which page it is showing, so a shift-click can never park a card in a row the
+	 * gunner is not looking at, and a filter slot that is not drawn can never be clicked by coincidence.
+	 */
+	public static final int TAB_LINKS = 0;
+	public static final int TAB_TARGET = 1;
+	public static final int TAB_CHANNELS = 2;
+	public static final int TAB_STATUS = 3;
+	public static final int TAB_TASKS = 4;
+	public static final int TAB_COUNT = 5;
+
+	/* Tab strip across the top of the panel, and the first row a page may use below it. */
+	public static final int TAB_BAR_X = 8;
+	public static final int TAB_BAR_Y = 2;
+	public static final int TAB_BAR_HEIGHT = 17;
+	public static final int TAB_WIDTH = 78;
+	public static final int TAB_GAP = 2;
+	/* The strip's own width follows from the page count: TAB_COUNT * TAB_WIDTH + (TAB_COUNT - 1) * TAB_GAP. */
+	public static final int CONTENT_TOP = TAB_BAR_Y + TAB_BAR_HEIGHT + 2;
+	/**
+	 * SYNC control of the channels page, in the header band at the panel's left edge: the grid owns everything
+	 * right of {@code CHANNEL_SLOT_X} in that band, where its header and five column labels sit.
+	 */
+	public static final int CHANNEL_SYNC_X = 8;
+	public static final int CHANNEL_SYNC_Y = CONTENT_TOP + 1;
+	public static final int CHANNEL_SYNC_W = 96;
+	public static final int CHANNEL_SYNC_H = 18;
+	/*
+	 * The tasks page's board: six columns, one queue each - the console's own queue first, then one per mount row,
+	 * so a column answers "what is this mount working on" instead of repeating the row readouts. Rows are entry
+	 * positions counted inside each column on its own, because a fire order is per-queue and the console and its
+	 * mounts do not hold the same number of them.
+	 */
+	public static final int TASK_COLUMNS = SLOTS + 1;
+	public static final int TASK_BOARD_X = 8;
+	public static final int TASK_BOARD_W = PANEL_WIDTH - 16;
+	public static final int TASK_COLUMN_W = TASK_BOARD_W / TASK_COLUMNS;
+	public static final int TASK_HEADER_Y = CONTENT_TOP + 2;
+	public static final int TASK_HEADER_H = 12;
+	public static final int TASK_ROW_Y = TASK_HEADER_Y + TASK_HEADER_H + 2;
+	public static final int TASK_ROW_H = 20;
+	public static final int TASK_BOARD_BOTTOM = TASK_ROW_Y + SLOTS * TASK_ROW_H;
 	/**
 	 * The last row band ends at LINK_SLOT_Y - ROW_BAND_INSET + 4 * LINK_SLOT_SPACING + ROW_BAND_H = 167, and the
 	 * 9 pixels left over are the visual gap under the last row.
@@ -115,6 +159,11 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	 * block entity data packet - the same flow MountFrequencyMenu uses for the mount radio.
 	 */
 	private final ItemStackHandler ghostHandler = new ItemStackHandler(CHANNEL_ITEM_SLOTS);
+	/**
+	 * Page currently open. The client sets it through {@link com.cbc.firecontrol.network.CalculatorTabPayload};
+	 * it starts on the links page, which is what the screen shows before any packet has arrived.
+	 */
+	private int activeTab = TAB_LINKS;
 
 	public TrajectoryCalculatorMenu(int containerId, Inventory playerInventory, BlockPos pos) {
 		super(CBCFCMenus.TRAJECTORY_CALCULATOR.get(), containerId);
@@ -140,6 +189,7 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 			addSlot(new Slot(playerInventory, col, PLAYER_SLOT_X + col * 18, HOTBAR_Y));
 
 		for (int i = 0; i < SLOTS; i++) {
+			final int slotId = CARD_SLOT_START + i;
 			addSlot(new SlotItemHandler(handler, i, LINK_SLOT_X, LINK_SLOT_Y + LINK_SLOT_SPACING * i) {
 				@Override
 				public boolean mayPlace(ItemStack stack) {
@@ -151,6 +201,13 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 					// Cards already stacksTo(1); restating it keeps the "one card identifies one mount" contract
 					// even if a datapack ever raises the item's stack size.
 					return 1;
+				}
+
+				@Override
+				public boolean isActive() {
+					// Cards belong to the links page. Vanilla takes this same answer for drawing, hovering and
+					// drag targeting, so hiding the page closes the slot on both sides at once.
+					return isSlotVisible(slotId);
 				}
 			});
 		}
@@ -170,11 +227,22 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	/**
 	 * Ghost slot: accepts any item as a channel filter and never consumes it. Consuming would be wrong here -
 	 * the item IS the frequency definition, and one filter item is meant to configure several channels.
+	 *
+	 * <p>Not static: the answer to "is this slot on screen" comes from the menu's open page, and an invisible
+	 * filter must not be a click target, a drag target or a shift-click destination.
 	 */
-	private static final class GhostSlot extends SlotItemHandler {
+	private final class GhostSlot extends SlotItemHandler {
+
+		private final int slotId;
 
 		GhostSlot(IItemHandler handler, int index, int x, int y) {
 			super(handler, index, x, y);
+			this.slotId = CHANNEL_SLOT_START + index;
+		}
+
+		@Override
+		public boolean isActive() {
+			return isSlotVisible(slotId);
 		}
 
 		@Override
@@ -205,6 +273,11 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	 */
 	@Override
 	public void clicked(int slotId, int dragType, ClickType clickType, Player player) {
+		// A slot that belongs to another page is not drawn, so it takes no input either: the cursor would
+		// otherwise drop onto coordinates that the open page uses for something else. slotId -999 (a click
+		// outside the panel) is not a slot at all and stays with vanilla's handling of it.
+		if (slotId >= 0 && !isSlotVisible(slotId))
+			return;
 		if (slotId < CHANNEL_SLOT_START) {
 			super.clicked(slotId, dragType, clickType, player);
 			return;
@@ -232,13 +305,16 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	}
 
 	/**
-	 * Shift-click semantics: a player card moves into an empty card slot; any other player item copies into
-	 * the first free channel filter (configuring a channel is a copy, never a move); a card in a card slot
-	 * moves back to the player inventory; shift-clicking a channel filter clears it.
+	 * Shift-click semantics, restricted to the page that is open: a player card moves into an empty card slot on
+	 * the links page, any item copies into the first free filter on the channels page, a card moves back to the
+	 * player inventory on the links page, and shift-clicking a filter clears it. On the pages that own no slot
+	 * range nothing moves, so a hidden range can never be edited by accident.
 	 */
 	@Override
 	public ItemStack quickMoveStack(Player player, int index) {
 		if (index >= CHANNEL_SLOT_START) {
+			if (!isSlotVisible(index))
+				return ItemStack.EMPTY;
 			ghostHandler.setStackInSlot(index - CHANNEL_SLOT_START, ItemStack.EMPTY);
 			getSlot(index).setChanged();
 			pushChannels();
@@ -253,24 +329,38 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 		ItemStack copy = slotStack.copy();
 
 		if (index >= CARD_SLOT_START) {
+			if (activeTab != TAB_LINKS)
+				return ItemStack.EMPTY;
 			// Out of a card slot into the player inventory, hotbar first (fromLast walks the range backwards).
 			if (!moveItemStackTo(slotStack, 0, CARD_SLOT_START, true))
 				return ItemStack.EMPTY;
-		} else {
-			boolean movedToCardSlot = slotStack.is(CBCItems.CALCULATOR_LINK.asItem())
-					&& moveItemStackTo(slotStack, CARD_SLOT_START, CHANNEL_SLOT_START, false);
-			if (!movedToCardSlot) {
-				for (int i = 0; i < ghostHandler.getSlots(); i++) {
-					if (!ghostHandler.getStackInSlot(i).isEmpty())
-						continue;
-					ItemStack filter = copy.copy();
-					filter.setCount(1);
-					ghostHandler.setStackInSlot(i, filter);
-					getSlot(CHANNEL_SLOT_START + i).setChanged();
-					pushChannels();
-					break;
-				}
+		} else if (activeTab == TAB_LINKS) {
+			/*
+			 * The links page moves cards only. Copying an unrelated item into a filter the gunner cannot see
+			 * would edit the console silently, and a card that finds no free row must stay in the inventory
+			 * rather than end up as a filter.
+			 */
+			if (!slotStack.is(CBCItems.CALCULATOR_LINK.asItem())
+					|| !moveItemStackTo(slotStack, CARD_SLOT_START, CHANNEL_SLOT_START, false))
+				return ItemStack.EMPTY;
+		} else if (activeTab == TAB_CHANNELS) {
+			// Configuring a channel is a copy, never a move; a link card is a legitimate filter item too.
+			boolean filled = false;
+			for (int i = 0; i < ghostHandler.getSlots(); i++) {
+				if (!ghostHandler.getStackInSlot(i).isEmpty())
+					continue;
+				ItemStack filter = copy.copy();
+				filter.setCount(1);
+				ghostHandler.setStackInSlot(i, filter);
+				getSlot(CHANNEL_SLOT_START + i).setChanged();
+				pushChannels();
+				filled = true;
+				break;
 			}
+			if (!filled)
+				return ItemStack.EMPTY;
+		} else {
+			return ItemStack.EMPTY;
 		}
 
 		if (slotStack.isEmpty())
@@ -297,6 +387,56 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 
 	public ItemStackHandler getGhostHandler() {
 		return ghostHandler;
+	}
+
+	public int getActiveTab() {
+		return activeTab;
+	}
+
+	/** Both sides: the client reports the page it shows, the server stores it so its gating matches the screen. */
+	public void setActiveTab(int tab) {
+		this.activeTab = (tab >= 0 && tab < TAB_COUNT) ? tab : TAB_LINKS;
+	}
+
+	/**
+	 * Which slot ranges the open page owns. Card slots belong to the links page and filter slots to the channels
+	 * page; the player inventory is always live, because it is drawn as chrome below the panel and belongs to no
+	 * page. One answer drives three vanilla mechanisms at once: {@code Slot#isActive} for rendering and hover,
+	 * {@link #clicked} for direct input, and {@link #quickMoveStack} for shift-click destinations.
+	 */
+	public boolean isSlotVisible(int slotId) {
+		if (slotId >= CHANNEL_SLOT_START)
+			return activeTab == TAB_CHANNELS;
+		if (slotId >= CARD_SLOT_START)
+			return activeTab == TAB_LINKS;
+		return true;
+	}
+
+	/**
+	 * Pull filters the gunner never touched. A mount console publishes its own frequency column set whenever it
+	 * is edited, and the calculator's copy of those filters only follows while this menu is rebuilt - which a
+	 * long-lived open console never does. The block entity re-reads the mounts every few seconds, so polling it
+	 * here is what makes an open console follow a change made at the gun instead of at the console.
+	 *
+	 * <p>The pull is deliberately cheap: the block entity's array is compared against the menu's copy and
+	 * nothing is written unless a filter actually differs, so an untouched console produces no sync traffic.
+	 */
+	@Override
+	public void broadcastChanges() {
+		super.broadcastChanges();
+		if (playerInventory.player.level().isClientSide())
+			return;
+		if (!(playerInventory.player.level().getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity be))
+			return;
+		ItemStack[] fromBE = be.getSlotChannelItems();
+		for (int i = 0; i < ghostHandler.getSlots() && i < fromBE.length; i++) {
+			ItemStack local = ghostHandler.getStackInSlot(i);
+			ItemStack remote = fromBE[i];
+			if (local.isEmpty() == remote.isEmpty() && ItemStack.isSameItemSameComponents(local, remote))
+				continue;
+			ghostHandler.setStackInSlot(i, remote.copy());
+			getSlot(CHANNEL_SLOT_START + i).setChanged();
+		}
 	}
 
 	/** Server side only: hand the menu-local filter copies to the block entity, which re-registers and syncs. */

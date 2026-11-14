@@ -12,9 +12,12 @@ import com.cbc.firecontrol.init.CBCFCMenus;
 import com.cbc.firecontrol.init.CBCItems;
 import com.cbc.firecontrol.network.CBCFCNetwork;
 import com.cbc.firecontrol.network.CalculatorAimPayload;
+import com.cbc.firecontrol.network.CalculatorChannelSyncPayload;
 import com.cbc.firecontrol.network.CalculatorTargetPayload;
+import com.cbc.firecontrol.network.CalculatorTabPayload;
 import com.cbc.firecontrol.network.MountControlPayload;
 import com.cbc.firecontrol.network.MountStatePayload;
+import com.cbc.firecontrol.network.TargetDesignatorFixPayload;
 import com.mojang.logging.LogUtils;
 import com.simibubi.create.foundation.data.CreateRegistrate;
 
@@ -141,6 +144,12 @@ public class CBCFireControl {
 				CBCFCNetwork::handleCalculatorTarget);
 		registrar.playToServer(CalculatorAimPayload.TYPE, CalculatorAimPayload.STREAM_CODEC,
 				CBCFCNetwork::handleCalculatorAim);
+		registrar.playToServer(CalculatorTabPayload.TYPE, CalculatorTabPayload.STREAM_CODEC,
+				CBCFCNetwork::handleCalculatorTab);
+		registrar.playToServer(CalculatorChannelSyncPayload.TYPE, CalculatorChannelSyncPayload.STREAM_CODEC,
+				CBCFCNetwork::handleCalculatorChannelSync);
+		registrar.playToServer(TargetDesignatorFixPayload.TYPE, TargetDesignatorFixPayload.STREAM_CODEC,
+				CBCFCNetwork::handleTargetDesignatorFix);
 		registrar.playToClient(MountStatePayload.TYPE, MountStatePayload.STREAM_CODEC, CBCFCNetwork::handleStateClient);
 		LOGGER.info("CBC Fire Control: registered mount-control payload handlers");
 	}

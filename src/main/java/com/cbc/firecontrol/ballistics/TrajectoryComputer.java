@@ -30,8 +30,6 @@ public final class TrajectoryComputer {
 
 	/** Hard cap on simulated ticks (big cannons have no CBC projectile lifetime, so cap the search). */
 	public static final int MAX_PREDICT_TICKS = 1200;
-	/** Hard cap on simulated travel distance, to bound work when a shot flies off into open sky. */
-	public static final double MAX_PREDICT_RANGE = 4096.0;
 	/**
 	 * CBC spawns the shot with its muzzle INSIDE the last barrel cell and CBC projectiles do not collide with
 	 * their own launch structure, so the first {@code CLEARANCE} blocks of flight are not collision-tested -
@@ -53,6 +51,10 @@ public final class TrajectoryComputer {
 	public static TrajectoryPrediction simulate(Level level, MountSnapshot snapshot) {
 		if (!snapshot.assembled())
 			return TrajectoryPrediction.failure(LinkStatus.NO_CANNON, snapshot.yawDeg(), snapshot.pitchDeg());
+		// Same gate as the inverse solve: with no round CBC fires nothing, so predicting the next shot from a
+		// muzzle speed alone would advertise a shot the gun cannot make.
+		if (!snapshot.canFireNext())
+			return TrajectoryPrediction.failure(LinkStatus.NO_ROUND, snapshot.yawDeg(), snapshot.pitchDeg());
 		if (snapshot.muzzleSpeed() <= 0.0)
 			return TrajectoryPrediction.failure(LinkStatus.NO_CHARGE, snapshot.yawDeg(), snapshot.pitchDeg());
 		return build(snapshot, simulateFlight(level, snapshot, snapshot.direction(), snapshot.muzzleSpeed()));
@@ -156,8 +158,8 @@ public final class TrajectoryComputer {
 				position = next;
 				if (level != null && level.isOutsideBuildHeight(BlockPos.containing(position)))
 					return new Flight(LinkStatus.OUT_OF_WORLD, position, tick);
-				if (position.distanceTo(muzzle) > MAX_PREDICT_RANGE)
-					return new Flight(LinkStatus.TOO_FAR, position, tick);
+				// No travel-distance cap: a flight ends on terrain, on leaving the world, on the shot bleeding
+				// off its speed (LIFETIME_END), or at the tick cap - all of which bound the work by themselves.
 			}
 		}
 		return new Flight(LinkStatus.LIFETIME_END, position, maxTicks);

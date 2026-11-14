@@ -175,6 +175,24 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		return this.cannonPitch;
 	}
 
+	/**
+	 * The direction the assembled bore points at right now, without walking the bore: the contraption
+	 * rotation of this mount applied to the assembly orientation CBC records for it, which is the same
+	 * vector {@code MountScanner.scan} derives from. The Trajectory Calculator drives its aim channels
+	 * every tick and cannot afford a full scan, so it reads the live angle through here instead.
+	 */
+	public Vec3 currentBoreDirection() {
+		AbstractMountedCannonContraption cannon = mountedCannonOrNull();
+		PitchOrientedContraptionEntity entity = mountedEntityOrNull();
+		if (cannon == null || entity == null)
+			return null;
+		Direction orientation = cannon.initialOrientation();
+		Vec3 base = entity.toGlobalVector(Vec3.atCenterOf(BlockPos.ZERO), 0.0f);
+		Vec3 along = entity.toGlobalVector(Vec3.atCenterOf(orientation.getNormal()), 0.0f);
+		Vec3 direction = along.subtract(base);
+		return direction.lengthSqr() < 1.0e-6 ? null : direction.normalize();
+	}
+
 	@Override
 	protected void assemble() throws AssemblyException {
 		// CBC's own assemble() is gated on CBCBlocks.CANNON_MOUNT.has(state); ours is gated on our block.
@@ -367,8 +385,13 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 	public static final int CH_FIRE = 4;
 	public static final int WIRELESS_CHANNELS = 5;
 
-	private static final float WIRELESS_YAW_STEP = 2.0F;
-	private static final float WIRELESS_PITCH_STEP = 1.0F;
+	/**
+	 * Highest signal strength a Create redstone link can carry. The received strength throttles the aim rate
+	 * in {@link #tickWirelessControl()}: the value-box RPM is the rate at this strength, and a weaker
+	 * transmitter turns proportionally slower.
+	 */
+	private static final int MAX_LINK_SIGNAL = 15;
+
 	private static final int FIRE_COOLDOWN_TICKS = 5;
 	/** Breech fireRate index temporarily raised around each autocannon shot so CBC's own fireShot passes its
 	 *  canFire() (fireRate>0). FIRE_RATES[14]=4 ticks/round. It is set straight back to 0 after the shot, so CBC's
@@ -376,8 +399,21 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 	private static final int AUTOCANNON_FIRE_RATE_WHILE_FIRING = 15;
 	/** Autocannon shot spacing while the radio Fire channel is powered: 4 ticks/round = 5 rounds/sec. */
 	private static final int AUTOCANNON_FIRE_INTERVAL_TICKS = 4;
+	/**
+	 * Aim speed range, in the RPM a Create Rotation Speed Controller would feed the interface shaft at FULL
+	 * (15) signal - {@link #tickWirelessControl()} converts it with CBC's own factor (rpm * 0.0375 deg/tick),
+	 * so the 128 ceiling is 4.8 deg/tick, or 96 deg/s: a full 360-degree yaw takes 75 ticks (3.75 s) at maximum
+	 * signal instead of the 15 s the previous 32 ceiling allowed.
+	 *
+	 * <p>At the top of the range one tick turns further than the calculator's derived drive deadband
+	 * (0.02-0.5 degrees), so a gunner who sets 128 and leaves the signal at full will see the barrel step over
+	 * the solved aim and come back. That is why the link's signal still throttles the rate proportionally: the
+	 * calculator drops the strength as the error shrinks, and 128 RPM then only applies to the coarse part of
+	 * the slew. Fine work stays on the lower end - the floor of 1 is what the stall-detection thresholds in the
+	 * calculator are sized against, so do not raise it.
+	 */
 	private static final int AIM_RPM_MIN = 1;
-	private static final int AIM_RPM_MAX = 32;
+	private static final int AIM_RPM_MAX = 128;
 	private static final int AIM_RPM_DEFAULT = 8;
 
 
@@ -643,23 +679,32 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		this.appliedYawStep = 0.0f;
 		this.appliedPitchStep = 0.0f;
 
-		// Radio steps mirror CBC's kinetic aiming exactly. A value-box "RPM" is treated as the RPM that a
-		// Create Rotation Speed Controller would feed the interface shaft, then CBC's own reduction applies:
+		// Radio steps mirror CBC's kinetic aiming, and are THROTTLED by the signal strength of the channel
+		// that asks for the motion. A value-box "RPM" is treated as the RPM that a Create Rotation Speed
+		// Controller would feed the interface shaft at FULL (15) signal, then CBC's own reduction applies:
 		//   Create convertToAngular(rpm) = rpm * 360 / 60 / 20 = rpm * 0.3  deg/tick  (KineticBlockEntity.java)
 		//   CBC  getAngularSpeed(rpm)   = convertToAngular(rpm) * 0.125   = rpm * 0.0375 deg/tick
 		// CannonMountBlockEntity uses the SAME 0.0375 factor for yaw and pitch, so both axes turn at the
 		// identical rate (the old "pitch at half rate" asymmetry is removed to match CBC).
+		//
+		// A Create redstone link transmits the neighbour's signal strength (0..15), not just on/off, so the
+		// received strength scales that rate linearly: strength 15 turns at the whole set RPM, strength 5 at a
+		// third of it. This is what makes a lever output, a comparator decay curve, or a graduated button
+		// stack behave as a fine-trim control instead of an all-or-nothing slew, which is how a gunner holds a
+		// mount onto a solved aim without overshooting it. Opposite channels cancel as before, and each side
+		// contributes its OWN throttled share, so a weak Yaw+ against a strong Yaw- turns backwards at the
+		// difference rather than sitting still.
 		float degPerTick = aimRpm * 0.0375f;
 		float yawStep = 0f;
 		float pitchStep = 0f;
 		if (channelPowered[CH_YAW_PLUS])
-			yawStep += degPerTick;
+			yawStep += degPerTick * channelPower[CH_YAW_PLUS] / (float) MAX_LINK_SIGNAL;
 		if (channelPowered[CH_YAW_MINUS])
-			yawStep -= degPerTick;
+			yawStep -= degPerTick * channelPower[CH_YAW_MINUS] / (float) MAX_LINK_SIGNAL;
 		if (channelPowered[CH_PITCH_UP])
-			pitchStep += degPerTick;
+			pitchStep += degPerTick * channelPower[CH_PITCH_UP] / (float) MAX_LINK_SIGNAL;
 		if (channelPowered[CH_PITCH_DOWN])
-			pitchStep -= degPerTick;
+			pitchStep -= degPerTick * channelPower[CH_PITCH_DOWN] / (float) MAX_LINK_SIGNAL;
 
 		boolean aimEnabled = (yawStep != 0f || pitchStep != 0f) && hasKineticStressInput();
 		if (aimEnabled) {
@@ -684,7 +729,11 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		return capacity > 0f && (capacity - stress) > 0.5f && !link.isOverStressed();
 	}
 
-	/** Editable aim speed (RPM target): shown on the mount's Create value box and driving the radio step. */
+	/**
+	 * Editable aim speed (RPM target): shown on the mount's Create value box and driving the radio step at
+	 * FULL signal. The rate actually applied is this scaled by each channel's received signal strength, so the
+	 * box reads the fast end of the range rather than the speed the mount is currently turning at.
+	 */
 	public int aimRpm() {
 		return aimRpm;
 	}
@@ -982,9 +1031,9 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 			this.cannonYaw = Mth.wrapDegrees(this.cannonYaw + deg);
 			this.appliedYawStep = AngleHelper.getShortestAngleDiff(prev, this.cannonYaw);
 			this.sendData();
-			
-			
-			
+
+
+
 		}
 	}
 
@@ -1041,8 +1090,13 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		this.sendData();
 	}
 
-	/** Below this many degrees an axis counts as already on aim. */
-	public static final double AIM_DEADBAND_DEG = 0.05;
+	/**
+	 * Below this many degrees an axis counts as already on aim. It is also the angular floor of the calculator's
+	 * closed-loop refinement (that loop stops when a re-solve asks for less than this), so it sets how precisely
+	 * a mount can be parked: 0.02 degrees is about 0.1 blocks of shot placement at 300 blocks, well inside the
+	 * 1.5 block hit tolerance the rows report against.
+	 */
+	public static final double AIM_DEADBAND_DEG = 0.02;
 
 	/**
 	 * Drive this mount to a solved aim. Both console APIs already speak the solver's convention -
@@ -1061,6 +1115,14 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 	 * <p>Clamping is reported rather than hidden: consoleAdjustPitch clamps to {@code [-maximumDepression,
 	 * maximumElevation]} itself and records how much of the request actually landed in {@code appliedPitchStep},
 	 * so a mount that cannot elevate far enough says so instead of claiming it is on aim.
+	 *
+	 * <p><b>Known defect, deliberately not fixed here (v0.0.5).</b> This method applies the whole delta in the
+	 * call, so a calculator-driven slew is not throttled by {@code aimRpm}, by the radio link's signal strength,
+	 * or by {@link #hasKineticStressInput()}: a 90 degree turn lands in a single tick, and the mount will move
+	 * even with the bottom kinetic link unpowered or its network overstressed. The radio path in
+	 * {@link #tickWirelessControl()} does respect all three. Fixing this means giving the mount target angles
+	 * and slewing toward them per tick, which moves the calculator's convergence check out of the Aim button
+	 * and changes what {@link AimSummary} can report - a deliberate semantic change, not a bug fix to slip in.
 	 */
 	public AimApplyResult applySolvedAim(AimSolution aim) {
 		if (this.level == null || this.level.isClientSide())

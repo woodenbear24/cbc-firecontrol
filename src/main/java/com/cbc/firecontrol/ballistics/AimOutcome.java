@@ -41,7 +41,13 @@ public enum AimOutcome {
 	/** Nothing loaded / no charge accumulated: no muzzle speed to solve with. */
 	NO_MUZZLE_SPEED(false),
 	/** The mount has no assembled cannon. */
-	NO_CANNON(false);
+	NO_CANNON(false),
+	/**
+	 * The cannon is assembled but its next shot does not exist: no round in the bore, a round that is not
+	 * assembled to its expected length, or a load the breech charge cannot ignite. See {@link RoundState},
+	 * which names which of the three it is.
+	 */
+	NO_ROUND(false);
 
 	/** Ordinal-indexed table so a stored/sent index decodes back safely instead of throwing. */
 	public static final AimOutcome[] BY_INDEX = values();
