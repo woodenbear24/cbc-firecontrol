@@ -34,9 +34,15 @@ import rbasamoyai.createbigcannons.compat.sable.CBCSableConnectivityUtils;
 @Mixin(CBCSableConnectivityUtils.class)
 public class CBCSableConnectivityMixin {
 
+	/**
+	 * Both CBC targets are {@code static}, so the handlers must be static too: mixin rejects a non-static
+	 * callback against a static target outright (it is a sanity-check failure, not a missed injector, so
+	 * {@code defaultRequire} cannot soften it - it fails the whole transform of the target class).
+	 */
 	@Inject(method = "isCannonMountAirGap(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/Level;)Z",
 			at = @At("RETURN"), cancellable = true)
-	private void cbcfc$advancedMountCountsAsAGap(BlockPos pos, Level level, CallbackInfoReturnable<Boolean> cir) {
+	private static void cbcfc$advancedMountCountsAsAGap(BlockPos pos, Level level,
+			CallbackInfoReturnable<Boolean> cir) {
 		if (!cir.getReturnValueZ() && cbcfc$isAdvancedMountAirGap(pos, level))
 			cir.setReturnValue(true);
 	}
@@ -44,7 +50,7 @@ public class CBCSableConnectivityMixin {
 	@Inject(method = "getCannonMountGaps(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/Level;"
 			+ "Lnet/minecraft/core/Direction;)Ljava/util/List;",
 			at = @At("RETURN"))
-	private void cbcfc$addAdvancedMountGaps(BlockPos pos, Level level, Direction facing,
+	private static void cbcfc$addAdvancedMountGaps(BlockPos pos, Level level, Direction facing,
 			CallbackInfoReturnable<List<BlockPos>> cir) {
 		List<BlockPos> gaps = cir.getReturnValue();
 		if (gaps == null)
