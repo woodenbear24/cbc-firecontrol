@@ -9,6 +9,7 @@ import com.cbc.firecontrol.client.TrajectoryCalculatorScreen;
 import com.cbc.firecontrol.client.gui.ConsoleTheme;
 import com.cbc.firecontrol.menu.TrajectoryCalculatorMenu;
 import com.cbc.firecontrol.network.CalculatorAimPayload;
+import com.cbc.firecontrol.network.CalculatorSettingsPayload;
 import com.cbc.firecontrol.network.CalculatorTargetPayload;
 
 import org.lwjgl.glfw.GLFW;
@@ -36,11 +37,19 @@ import net.neoforged.neoforge.network.PacketDistributor;
  * <p>The widgets are built when the page is entered, not once at construction: their bounds are window-absolute,
  * so a resized window would leave them at the old panel position otherwise. Re-seeding from the block entity on
  * entry is also what makes reopening the console never suggest a new shot.
+ *
+ * <p>The page also carries the fire-mission wait window - the one setting the console exposes, how long a mount
+ * may hold an order it cannot take yet - in a second strip under the target entry. It belongs here rather than on
+ * a page of its own because it answers the same question the rows below the target do: what becomes of an order
+ * once this console has solved it. One number alone did not justify a sixth page, and a page that held only it
+ * left that number's effect a click away from the readouts that show it happening.
  */
 public class CalculatorTargetTab extends CalculatorTab {
 
 	/** Optional sign, up to 12 integer digits, at most three decimals: a block coordinate, not a formula. */
 	private static final Pattern COORDINATE = Pattern.compile("-?\\d{0,12}(\\.\\d{0,3})?");
+	/** Whole seconds, at most two digits: the server clamps the value, so the field only needs to be numeric. */
+	private static final Pattern SECONDS = Pattern.compile("\\d{0,2}");
 
 	private EditBox targetX;
 	private EditBox targetY;
@@ -49,6 +58,10 @@ public class CalculatorTargetTab extends CalculatorTab {
 	private Button aimButton;
 	/** Parse state of the three fields, recomputed on every keystroke; drives text colour and SET state. */
 	private boolean fieldsValid;
+	/** The wait window of the block below the strip, and its own parse state. */
+	private EditBox waitField;
+	private Button waitSetButton;
+	private boolean waitValid;
 
 	public CalculatorTargetTab() {
 		super(TrajectoryCalculatorMenu.TAB_TARGET, "cbc_firecontrol.calculator.tab.target");
@@ -87,6 +100,32 @@ public class CalculatorTargetTab extends CalculatorTab {
 				.tooltip(Tooltip.create(Component.translatable("cbc_firecontrol.calculator.target.aim_hint")))
 				.build();
 
+		/*
+		 * The second block, built exactly like the first: one field, one commit button, its own parse state.
+		 * Its tooltip carries the server's bounds because the server clamps what this field can ask for.
+		 */
+		int waitY = screen.panelTop() + TrajectoryCalculatorMenu.TARGET_WAIT_STRIP_Y;
+		waitField = new EditBox(screen.consoleFont(),
+				screen.panelLeft() + TrajectoryCalculatorMenu.TARGET_WAIT_FIELD_X, waitY,
+				TrajectoryCalculatorMenu.TARGET_WAIT_FIELD_W, TrajectoryCalculatorMenu.TARGET_FIELD_H,
+				Component.translatable("cbc_firecontrol.calculator.settings.wait"));
+		waitField.setFilter(text -> text.isEmpty() || SECONDS.matcher(text).matches());
+		waitField.setMaxLength(2);
+		waitField.setTextColor(ConsoleTheme.FIELD_TEXT);
+		waitField.setResponder(ignored -> refreshWaitValidity());
+		waitField.setTooltip(Tooltip.create(Component.translatable(
+				"cbc_firecontrol.calculator.settings.wait_hint",
+				TrajectoryCalculatorBlockEntity.MIN_MISSION_WAIT_SECONDS,
+				TrajectoryCalculatorBlockEntity.MAX_MISSION_WAIT_SECONDS)));
+		seedWaitFromCalculator(screen);
+		waitSetButton = Button.builder(Component.translatable("cbc_firecontrol.calculator.settings.set"),
+				button -> commitWait(screen))
+				.bounds(screen.panelLeft() + TrajectoryCalculatorMenu.TARGET_WAIT_SET_X, waitY,
+						TrajectoryCalculatorMenu.TARGET_WAIT_SET_W, TrajectoryCalculatorMenu.TARGET_FIELD_H)
+				.tooltip(Tooltip.create(Component.translatable("cbc_firecontrol.calculator.settings.set_hint")))
+				.build();
+		refreshWaitValidity();
+
 		List<GuiEventListener> widgets = new ArrayList<>();
 		widgets.add(targetX);
 		widgets.add(targetY);
@@ -94,6 +133,8 @@ public class CalculatorTargetTab extends CalculatorTab {
 		widgets.add(setButton);
 		widgets.add(clearButton);
 		widgets.add(aimButton);
+		widgets.add(waitField);
+		widgets.add(waitSetButton);
 		// SET is enabled only when all three fields parse, so a half-entered coordinate cannot be committed.
 		refreshFieldValidity();
 		return widgets;
@@ -127,31 +168,46 @@ public class CalculatorTargetTab extends CalculatorTab {
 	}
 
 	/**
-	 * Follow the stored target while no field is being edited, so another player (or a redstone-driven change)
-	 * that moves the target is reflected here instead of the fields quietly disagreeing with the readouts.
+	 * Follow the stored target and window while their fields are not being edited, so another player (or a
+	 * redstone-driven change) that moves either is reflected here instead of the fields quietly disagreeing with
+	 * the readouts. Each block guards only its own fields: typing a coordinate must not freeze the window beside
+	 * it, or the page would show a value the mounts have already moved past.
 	 */
 	@Override
 	protected void ticked(TrajectoryCalculatorScreen screen) {
 		TrajectoryCalculatorBlockEntity calculator = calculator(screen);
-		if (calculator == null || targetX.isFocused() || targetY.isFocused() || targetZ.isFocused())
+		if (calculator == null)
 			return;
-		String x = calculator.hasTarget() ? CalculatorTooltips.numberText(calculator.targetX()) : "";
-		String y = calculator.hasTarget() ? CalculatorTooltips.numberText(calculator.targetY()) : "";
-		String z = calculator.hasTarget() ? CalculatorTooltips.numberText(calculator.targetZ()) : "";
-		if (!targetX.getValue().equals(x))
-			targetX.setValue(x);
-		if (!targetY.getValue().equals(y))
-			targetY.setValue(y);
-		if (!targetZ.getValue().equals(z))
-			targetZ.setValue(z);
-		refreshFieldValidity();
+		if (!targetX.isFocused() && !targetY.isFocused() && !targetZ.isFocused()) {
+			String x = calculator.hasTarget() ? CalculatorTooltips.numberText(calculator.targetX()) : "";
+			String y = calculator.hasTarget() ? CalculatorTooltips.numberText(calculator.targetY()) : "";
+			String z = calculator.hasTarget() ? CalculatorTooltips.numberText(calculator.targetZ()) : "";
+			if (!targetX.getValue().equals(x))
+				targetX.setValue(x);
+			if (!targetY.getValue().equals(y))
+				targetY.setValue(y);
+			if (!targetZ.getValue().equals(z))
+				targetZ.setValue(z);
+			refreshFieldValidity();
+		}
+		if (!waitField.isFocused()) {
+			String stored = String.valueOf(calculator.missionWaitSeconds());
+			if (!waitField.getValue().equals(stored))
+				waitField.setValue(stored);
+			refreshWaitValidity();
+		}
 	}
 
 	@Override
 	protected boolean keyTyped(TrajectoryCalculatorScreen screen, int keyCode, int scanCode, int modifiers) {
-		if ((keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER)
-				&& (targetX.isFocused() || targetY.isFocused() || targetZ.isFocused())) {
+		if (keyCode != GLFW.GLFW_KEY_ENTER && keyCode != GLFW.GLFW_KEY_KP_ENTER)
+			return false;
+		if (targetX.isFocused() || targetY.isFocused() || targetZ.isFocused()) {
 			commitTarget(screen);
+			return true;
+		}
+		if (waitField.isFocused()) {
+			commitWait(screen);
 			return true;
 		}
 		return false;
@@ -171,6 +227,13 @@ public class CalculatorTargetTab extends CalculatorTab {
 		int stripBottom = screen.panelTop() + TrajectoryCalculatorMenu.TARGET_STRIP_BOTTOM;
 		graphics.fill(x + 8, stripTop, x + w - 8, stripBottom, ConsoleTheme.TARGET_BG);
 		graphics.fill(x + 8, stripBottom - 1, x + w - 8, stripBottom, ConsoleTheme.PANEL_EDGE);
+
+		/* The window block's band, drawn the same way, so a setting reads as an input rather than as text. */
+		int waitTop = screen.panelTop() + TrajectoryCalculatorMenu.TARGET_WAIT_STRIP_Y
+				- TrajectoryCalculatorMenu.TARGET_WAIT_STRIP_PAD_TOP;
+		int waitBottom = screen.panelTop() + TrajectoryCalculatorMenu.TARGET_WAIT_STRIP_BOTTOM;
+		graphics.fill(x + 8, waitTop, x + w - 8, waitBottom, ConsoleTheme.TARGET_BG);
+		graphics.fill(x + 8, waitBottom - 1, x + w - 8, waitBottom, ConsoleTheme.PANEL_EDGE);
 	}
 
 	@Override
@@ -205,6 +268,31 @@ public class CalculatorTargetTab extends CalculatorTab {
 			graphics.drawString(screen.consoleFont(), Component.translatable("cbc_firecontrol.calculator.target.none"),
 					TrajectoryCalculatorMenu.TARGET_ECHO_X, labelY, ConsoleTheme.TEXT_SECONDARY, false);
 		}
+
+		/*
+		 * The window block under the strip: its own heading, the field's label, the echo of what the console
+		 * holds (which is what the mounts are working to, not whatever is typed) and the three lines that say
+		 * what the window does and does not cover.
+		 */
+		var font = screen.consoleFont();
+		graphics.drawString(font, Component.translatable("cbc_firecontrol.calculator.settings.label"),
+				8, TrajectoryCalculatorMenu.TARGET_WAIT_HEADER_Y, ConsoleTheme.HEADER_TEXT, false);
+		int waitLabelY = TrajectoryCalculatorMenu.TARGET_WAIT_STRIP_Y + 6;
+		graphics.drawString(font, Component.translatable("cbc_firecontrol.calculator.settings.wait"),
+				TrajectoryCalculatorMenu.TARGET_WAIT_LABEL_X, waitLabelY, ConsoleTheme.CHANNEL_LABEL, false);
+		int stored = calculator == null
+				? TrajectoryCalculatorBlockEntity.DEFAULT_MISSION_WAIT_SECONDS
+				: calculator.missionWaitSeconds();
+		graphics.drawString(font, fit(font,
+				Component.translatable("cbc_firecontrol.calculator.settings.current", String.valueOf(stored)),
+				TrajectoryCalculatorMenu.TARGET_WAIT_ECHO_W),
+				TrajectoryCalculatorMenu.TARGET_WAIT_ECHO_X, waitLabelY, ConsoleTheme.COLOR_STALLED, false);
+		int noteY = TrajectoryCalculatorMenu.TARGET_WAIT_NOTE_Y;
+		for (int line = 1; line <= 3; line++)
+			graphics.drawString(font, Component.translatable("cbc_firecontrol.calculator.settings.note" + line),
+					TrajectoryCalculatorMenu.TARGET_WAIT_LABEL_X,
+					noteY + (line - 1) * TrajectoryCalculatorMenu.TARGET_WAIT_NOTE_LINE_H,
+					ConsoleTheme.TEXT_SECONDARY, false);
 	}
 
 	private void refreshFieldValidity() {
@@ -226,6 +314,48 @@ public class CalculatorTargetTab extends CalculatorTab {
 		} catch (NumberFormatException e) {
 			return null;
 		}
+	}
+
+	/**
+	 * The console's stored window, not the typed text: reopening the page must show what the mounts are actually
+	 * working to, and a half-entered number must never look like a setting that is in force.
+	 */
+	private void seedWaitFromCalculator(TrajectoryCalculatorScreen screen) {
+		TrajectoryCalculatorBlockEntity calculator = calculator(screen);
+		waitField.setValue(calculator == null
+				? String.valueOf(TrajectoryCalculatorBlockEntity.DEFAULT_MISSION_WAIT_SECONDS)
+				: String.valueOf(calculator.missionWaitSeconds()));
+	}
+
+	private void refreshWaitValidity() {
+		waitValid = parseSeconds(waitField.getValue()) != null;
+		waitField.setTextColor(waitValid ? ConsoleTheme.FIELD_TEXT : ConsoleTheme.FIELD_TEXT_INVALID);
+		if (waitSetButton != null)
+			waitSetButton.active = waitValid;
+	}
+
+	private static Integer parseSeconds(String text) {
+		if (text == null || text.isEmpty() || !SECONDS.matcher(text).matches())
+			return null;
+		try {
+			return Integer.parseInt(text);
+		} catch (NumberFormatException e) {
+			return null;
+		}
+	}
+
+	/**
+	 * Commit the typed window, or nothing at all - an empty field is never sent as a zero window. The server
+	 * clamps what arrives to its own bounds, and the window is read live by the mount check loop, so lengthening
+	 * it also rescues the orders already waiting and shortening it lets the oldest of them go on the next check.
+	 */
+	private void commitWait(TrajectoryCalculatorScreen screen) {
+		Integer seconds = parseSeconds(waitField.getValue());
+		if (seconds == null) {
+			refreshWaitValidity();
+			return;
+		}
+		PacketDistributor.sendToServer(new CalculatorSettingsPayload(menu(screen).getCalculatorPos(), seconds));
 	}
 
 	/** Commit what is typed, in full, or not at all - a half-entered target is never sent. */

@@ -144,7 +144,7 @@ public class CalculatorTaskTab extends CalculatorTab {
 
 	/**
 	 * One mount's queue. Its first entry is the order in front of that mount and the phase it is in, with the
-	 * refusal chances left while the mount still cannot take it; behind the front order the queue shows its
+	 * wait left on that order while the mount still cannot take it; behind the front order the queue shows its
 	 * depth as "+n" rather than repeating each waiting order, whose coordinates the console column already
 	 * carries. A row holding no orders still shows the aim the console put on it by hand.
 	 */
@@ -184,13 +184,21 @@ public class CalculatorTaskTab extends CalculatorTab {
 		MissionPhase phase = be.missionPhase(slot);
 		return switch (phase) {
 			case NONE -> new Cell(Component.literal(DASH), ConsoleTheme.TEXT_SECONDARY);
-			case QUEUED -> new Cell(Component.translatable("cbc_firecontrol.calculator.tasks.cell.refusing",
-					be.missionRejectionsLeft(slot)), ConsoleTheme.COLOR_ERROR);
+			case QUEUED -> new Cell(Component.translatable("cbc_firecontrol.calculator.tasks.cell.waiting",
+					waitText(be.missionTtlLeft(slot))), ConsoleTheme.COLOR_STALLED);
 			case AIMING -> new Cell(Component.translatable("cbc_firecontrol.calculator.tasks.cell.aiming"),
 					ConsoleTheme.COLOR_STALLED);
 			case FIRING -> new Cell(Component.translatable("cbc_firecontrol.calculator.tasks.cell.firing"),
 					ConsoleTheme.COLOR_OK);
 		};
+	}
+
+	/**
+	 * A waiting order's remaining window in seconds, to one decimal. The board has room for this much and no
+	 * more; the column tooltip quotes the same figure beside the phase.
+	 */
+	private static String waitText(int ticksLeft) {
+		return String.format("%.1fs", ticksLeft / 20.0);
 	}
 
 	@Override
@@ -260,7 +268,7 @@ public class CalculatorTaskTab extends CalculatorTab {
 					front == null ? Component.literal(DASH)
 						: coords(front.x(), front.y(), front.z()),
 					Component.translatable(phaseKey(be.missionPhase(slot))),
-					be.missionRejectionsLeft(slot), queueSize));
+					Component.literal(waitText(be.missionTtlLeft(slot))), queueSize));
 		}
 		lines.add(CalculatorTooltips.firstLine(slot, prediction.status()));
 		if (be.hasTarget()) {

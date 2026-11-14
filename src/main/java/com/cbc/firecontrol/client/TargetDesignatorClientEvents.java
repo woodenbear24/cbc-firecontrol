@@ -4,6 +4,7 @@ import com.cbc.firecontrol.CBCFireControl;
 import com.cbc.firecontrol.init.CBCItems;
 import com.cbc.firecontrol.item.TargetDesignatorItem;
 import com.cbc.firecontrol.item.TargetDesignatorLinkData;
+import com.cbc.firecontrol.network.DesignatorProbePayload;
 import com.cbc.firecontrol.network.TargetDesignatorFixPayload;
 
 import com.mojang.blaze3d.platform.InputConstants;
@@ -20,6 +21,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
+
+import org.jetbrains.annotations.Nullable;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -62,10 +65,11 @@ public class TargetDesignatorClientEvents {
 	 * was actually consumed, so an unbound designator still picks blocks as vanilla would.
 	 *
 	 * <p>What gets locked is the first cell the sight line passes through that holds a block - see
-	 * {@link #firstLockedCell}. And the spotter hears what was locked, block name included, in chat: the aim
-	 * outcome then takes the actionbar line, so "which block did I just order" stays readable after the summary
-	 * scrolls past. Neither side gates the lock on a distance any more: whatever the scope line finds is a real
-	 * cell, so the console takes it and whether it can be hit is the ballistics' answer, not a range rule's.
+	 * {@link #walkSightLine}. Every answer the designator gives goes to the actionbar rather than to chat: the
+	 * spotter reads it while looking through the scope, and the console's own reply (which block it took, and how
+	 * many mount queues took the order) lands on that same line, so one message per click is what survives.
+	 * Neither side gates the lock on a distance any more: whatever the scope line finds is a real cell, so the
+	 * console takes it and whether it can be hit is the ballistics' answer, not a range rule's.
 	 */
 	@SubscribeEvent
 	public static void onMouseButton(InputEvent.MouseButton.Pre event) {
@@ -88,24 +92,54 @@ public class TargetDesignatorClientEvents {
 		}
 
 		Vec3 eye = player.getEyePosition(1.0F);
-		BlockPos target = firstLockedCell(mc.level, eye, TargetDesignatorItem.scopeEndPoint(mc.level, player));
-		if (target == null) {
-			player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.target_designator.no_block"),
-					true);
+		Vec3 far = TargetDesignatorItem.scopeEndPoint(mc.level, player);
+		Sight sight = walkSightLine(mc.level, eye, far);
+
+		if (sight.cell() != null) {
+			BlockPos target = sight.cell();
+			PacketDistributor.sendToServer(
+					new TargetDesignatorFixPayload(link.calculator(), target.getX(), target.getY(), target.getZ()));
+			/*
+			 * No echo here: the console answers the click itself, on the actionbar, with the block it took and how
+			 * many mount queues accepted the order. Printing the lock here as well would only overwrite one line
+			 * with the other, and the console's answer is the one that says what actually happened.
+			 */
+			event.setCanceled(true);
 			return;
 		}
 
-		PacketDistributor.sendToServer(
-				new TargetDesignatorFixPayload(link.calculator(), target.getX(), target.getY(), target.getZ()));
-		player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.target_designator.fixed",
-				mc.level.getBlockState(target).getBlock().getName(), target.getX(), target.getY(), target.getZ()),
-				false);
-		event.setCanceled(true);
+		/*
+		 * The line found nothing, but there are two different "nothing"s. If it stopped because it left
+		 * simulated space while length of the line was still untested, the spotter cannot see what is out there -
+		 * so ask the bound console to load along the line and look. If the whole line was walked and came up
+		 * empty, the world really is empty along it and saying so is the honest answer.
+		 */
+		if (sight.scanned() < sight.ray()) {
+			PacketDistributor.sendToServer(new DesignatorProbePayload(link.calculator(), eye,
+					far.subtract(eye), sight.scanned(), sight.ray()));
+			player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.target_designator.probing"),
+					true);
+			event.setCanceled(true);
+			return;
+		}
+		player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.target_designator.no_block"),
+				true);
+	}
+
+	/** Crossing-parameter tolerance for boundaries that share one point (a corner the line passes through). */
+	private static final double TIE_EPS = 1e-12;
+
+	/**
+	 * What a sight-line walk ended with: the cell it locked (null when it locked nothing), how far along the line
+	 * it tested in blocks, and how far the line itself runs before the world border ends it. {@code scanned}
+	 * short of {@code ray} is the case where the walk left simulated space rather than crossing an empty world.
+	 */
+	private record Sight(@Nullable BlockPos cell, double scanned, double ray) {
 	}
 
 	/**
-	 * The first cell the sight line passes through that holds something the player can actually see, or null when
-	 * the whole line is empty space.
+	 * The first cell the sight line passes through that holds something the player can actually see, plus how far
+	 * the walk got and how far the line could have gone - see {@link Sight}.
 	 *
 	 * <p>{@code Level#clip} is the wrong tool here even though it is what a crosshair normally uses: it intersects
 	 * SHAPES, and the shapes of grass, flowers, snow layers, carpets, signs, lanterns and torches are either empty
@@ -117,15 +151,18 @@ public class TargetDesignatorClientEvents {
 	 * lava are see-through enough to aim past, while a waterlogged fence still counts because its block is a fence
 	 * rather than a {@link LiquidBlock}.
 	 *
-	 * <p>The traversal stops at the first cell whose chunk is not on the client. Beyond simulated space the answer
-	 * would be invented, and locking something hidden behind terrain nobody can see is worse than locking nothing;
-	 * the spotter gets the "nothing along the scope line" message instead and can move or look elsewhere.
+	 * <p>The traversal stops at the first cell whose chunk is not on the client, and reports the distance it
+	 * reached rather than a bare "nothing". Beyond simulated space an answer would be invented, and locking
+	 * something hidden behind terrain nobody can see is worse than locking nothing - but the console at the other
+	 * end of the binding does have that terrain, so the caller hands it the line and lets it look (see
+	 * {@link com.cbc.firecontrol.block.entity.DesignatorProbe}).
 	 */
-	/** Crossing-parameter tolerance for boundaries that share one point (a corner the line passes through). */
-	private static final double TIE_EPS = 1e-12;
-
-	private static BlockPos firstLockedCell(Level level, Vec3 from, Vec3 to) {
+	private static Sight walkSightLine(Level level, Vec3 from, Vec3 to) {
 		Vec3 delta = to.subtract(from);
+		double ray = delta.length();
+		// The parameter at which the cell now being tested was entered, so a walk that stops on an unloaded cell
+		// reports the distance it actually covered instead of one cell further than it did.
+		double entered = 0.0;
 		int x = Mth.floor(from.x);
 		int y = Mth.floor(from.y);
 		int z = Mth.floor(from.z);
@@ -155,13 +192,14 @@ public class TargetDesignatorClientEvents {
 			if (step > 0) {
 				BlockPos cell = new BlockPos(x, y, z);
 				if (!level.hasChunkAt(cell))
-					return null;
+					return new Sight(null, entered * ray, ray);
 				if (holdsBlock(level.getBlockState(cell)))
-					return cell;
+					return new Sight(cell, entered * ray, ray);
 			}
 			double next = Math.min(Math.min(tMaxX, tMaxY), tMaxZ);
 			if (next > 1.0)
-				return null;
+				return new Sight(null, ray, ray);
+			entered = next;
 			// Two or three boundaries can share one crossing parameter: the eye sitting exactly on a corner, or the
 			// line passing through a lattice corner. Cross them together, which enters the diagonally adjacent cell
 			// - the only one the line spends length inside. Advancing a single axis would instead test a side cell
@@ -179,7 +217,7 @@ public class TargetDesignatorClientEvents {
 				tMaxZ += tDeltaZ;
 			}
 		}
-		return null;
+		return new Sight(null, ray, ray);
 	}
 
 	/** Air is not a target, and neither is a cell that is only liquid; everything rendered counts. */

@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.cbc.firecontrol.mixin",
+  "plugin": "com.cbc.firecontrol.mixin.CBCFCMixinPlugin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "compat.sable.CBCSableConnectivityMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

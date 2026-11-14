@@ -120,6 +120,24 @@ public class CBCFCNetwork {
 	}
 
 	/**
+	 * The target page's wait window: how long a mount may hold an order it cannot take. Authority is the block
+	 * itself, the same rule the target entry and the aim order use; the block entity clamps the value, so a
+	 * modified client cannot open an arbitrarily long window.
+	 */
+	public static void handleCalculatorSettings(CalculatorSettingsPayload payload, IPayloadContext context) {
+		context.enqueueWork(() -> {
+			if (!(context.player() instanceof ServerPlayer player))
+				return;
+			BlockPos pos = payload.pos();
+			if (!(player.level().getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity calculator))
+				return;
+			if (!calculator.canPlayerUse(player))
+				return;
+			calculator.setMissionWaitSeconds(payload.missionWaitSeconds());
+		});
+	}
+
+	/**
 	 * A spotter locked a block through a designator bound to this console: take it as the console's target and slew
 	 * its mounts onto it, as one order.
 	 *
@@ -148,16 +166,44 @@ public class CBCFCNetwork {
 				return;
 			}
 
-			calculator.setTarget(payload.x(), payload.y(), payload.z());
 			/*
-			 * The order is a fire mission rather than a one-off aim: it goes into the console's queue and
-			 * into every active mount's own queue, where each mount takes it when it can, turns onto it and
-			 * fires it over its wireless fire channel. A mount that cannot take it inside its refusal
-			 * chances drops that mission on its own and moves to the next one behind it.
+			 * The order is a fire mission rather than a one-off aim: it goes into the console's queue and into
+			 * every active mount's own queue, where each mount takes it when it can, turns onto it and fires it
+			 * over its wireless fire channel. A mount that cannot take it waits it out for the window configured
+			 * on the console's target page, and drops it from its own queue when that expires; an order the
+			 * mount cannot solve at all is dropped at once. The spotter's answer is the one actionbar line
+			 * {@link TrajectoryCalculatorBlockEntity#applyDesignatorLock} puts up, naming the block and how many
+			 * queues took the order - the same answer a terrain walk gives when it finds something, so both
+			 * routes of a middle click read alike.
 			 */
-			int handed = calculator.addMission(payload.x(), payload.y(), payload.z());
-			player.displayClientMessage(Component.translatable(
-					"cbc_firecontrol.calculator.target_designator.mission", handed), true);
+			calculator.applyDesignatorLock(player, new BlockPos(payload.x(), payload.y(), payload.z()));
+		});
+	}
+
+	/**
+	 * A designator's sight line found nothing, but only because it left the chunks the client has. Validates the
+	 * request exactly as a lock is validated - a designator in these hands, bound to the console the packet
+	 * names - and then hands the line to the console, which is the one that knows how far along it is worth
+	 * loading terrain: past its mounts' reach there is nothing to find for this console.
+	 */
+	public static void handleDesignatorProbe(DesignatorProbePayload payload, IPayloadContext context) {
+		context.enqueueWork(() -> {
+			if (!(context.player() instanceof ServerPlayer player))
+				return;
+			BlockPos pos = payload.calculator();
+			if (!(player.level().getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity calculator)) {
+				// The console was dismantled or its chunk went away: the spotter must hear that, not wait in silence.
+				player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.target_designator.console_gone"),
+						true);
+				return;
+			}
+			if (heldBoundDesignator(player, pos).isEmpty()) {
+				player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.target_designator.not_bound"),
+						true);
+				return;
+			}
+			calculator.requestDesignatorProbe(player, payload.origin(), payload.direction(), payload.scanned(),
+					payload.rayDistance());
 		});
 	}
 

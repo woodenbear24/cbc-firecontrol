@@ -62,7 +62,9 @@ public class TargetDesignatorItem extends Item {
 	 * The far end of the scope line a target is locked along. There is no fixed length any more: the line runs out
 	 * toward the world border, and the cell walk in {@code TargetDesignatorClientEvents} ends on its own the moment
 	 * it leaves simulated space (the first cell whose chunk is not loaded). What the world and the loaded chunks
-	 * allow is the reach; the console accepts whatever comes out of it.
+	 * allow is the reach; the console accepts whatever comes out of it. A line that stops on unloaded terrain is
+	 * handed to the bound console, which loads along it until either a block inside its mounts' reach turns up or
+	 * the line leaves that reach (see {@code DesignatorProbe}).
 	 */
 	public static Vec3 scopeEndPoint(Level level, Player player) {
 		Vec3 eye = player.getEyePosition(1.0F);
@@ -213,12 +215,22 @@ public class TargetDesignatorItem extends Item {
 		}
 		tooltip.add(line);
 		Level level = context.level();
-		// The console's stored target, when that console is loaded client-side; coordinates are always shown.
-		if (level != null && level.getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity calculator
-				&& calculator.hasTarget()) {
-			tooltip.add(Component.translatable("item.cbc_firecontrol.target_designator.stored_target",
-					Math.round(calculator.targetX()), Math.round(calculator.targetY()),
-					Math.round(calculator.targetZ())).withStyle(ChatFormatting.GRAY));
+		// Console details come from the block entity, so they are only available when it is loaded client-side;
+		// the bound coordinates above are shown either way.
+		if (level != null && level.getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity calculator) {
+			if (calculator.hasTarget())
+				tooltip.add(Component.translatable("item.cbc_firecontrol.target_designator.stored_target",
+						Math.round(calculator.targetX()), Math.round(calculator.targetY()),
+						Math.round(calculator.targetZ())).withStyle(ChatFormatting.GRAY));
+			/*
+			 * What the bound console can shoot at, which is also the bound on a middle click: when the scope
+			 * line finds nothing inside the terrain the client has simulated, the console loads along that line
+			 * only as far as its own mounts can throw a shot. Past that there is nothing for it to lock.
+			 */
+			double range = calculator.maxConsoleRange();
+			if (range > 0.0)
+				tooltip.add(Component.translatable("item.cbc_firecontrol.target_designator.console_range",
+						String.format("%.0f", range)).withStyle(ChatFormatting.DARK_AQUA));
 		}
 		tooltip.add(Component.translatable("item.cbc_firecontrol.target_designator.usage_note").withStyle(ChatFormatting.GRAY));
 		tooltip.add(Component.translatable("item.cbc_firecontrol.target_designator.range_note")

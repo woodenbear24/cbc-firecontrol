@@ -40,6 +40,11 @@ description='''
 A Create Big Cannons addon for fire control systems.
 '''
 
+# Our one mixin config. NeoForge reads it straight from here (no Gradle mixin plugin needed); the config's
+# plugin skips the Sable compat mixin unless Sable is actually installed, the same way CBC gates its own.
+[[mixins]]
+config = "${mod_id}.mixins.json"
+
 # A dependency - use the . to indicate dependency for a specific modid. Dependencies are optional.
 [[dependencies.${mod_id}]] #optional
     # the modid of the dependency
@@ -78,5 +83,16 @@ A Create Big Cannons addon for fire control systems.
     modId="ritchiesprojectilelib"
     type="required"
     versionRange="${rpl_version_range}"
+    ordering="NONE"
+    side="BOTH"
+
+# Sable is optional, exactly as it is for CBC: we never compile against it. Declaring it lets the loader
+# resolve it as a soft dependency (so load ordering and the /mixed + mod list report it) and matches CBC's own
+# metadata, which is what our compat mixin relies on - CBC registers the sub-level coordinate/force handling,
+# and we only extend that handling to our mount.
+[[dependencies.${mod_id}]]
+    modId="sable"
+    type="optional"
+    versionRange="${sable_version_range}"
     ordering="NONE"
     side="BOTH"

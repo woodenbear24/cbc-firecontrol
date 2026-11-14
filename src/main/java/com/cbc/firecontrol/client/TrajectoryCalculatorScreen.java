@@ -25,8 +25,8 @@ import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
  * Create-style console of the Trajectory Calculator, split into pages (see {@link TabbedSimiContainerScreen}):
- * the link cards and their readouts, the target entry, the channel grid, a status page that quotes the same
- * numbers without the grid crowding them, and an empty tasks page.
+ * the link cards and their readouts, the target entry with the mission wait window under it, the channel grid, a
+ * status page that quotes the same numbers without the grid crowding them, and the fire-mission board.
  *
  * <p>Drawn procedurally with {@link GuiGraphics#fill} instead of a bespoke panel texture: the readout column is
  * wide (mount coordinates, status, impact point, speed, flight time) and text-driven, so a flat dark panel with

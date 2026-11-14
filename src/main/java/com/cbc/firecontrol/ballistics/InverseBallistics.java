@@ -157,6 +157,81 @@ public final class InverseBallistics {
 		return classifyFailure(snapshot, envelope, yaw, targetY, planRange, evaluations);
 	}
 
+	/* ------------------------------------------------------------------ the mount's own reach */
+
+	/**
+	 * Refinement steps for {@link #maximumReach}: the range curve is single-peaked, so narrowing the bracket
+	 * around the best scan sample converges quickly and needs no budget of its own.
+	 */
+	private static final int REACH_REFINE_STEPS = 12;
+
+	/**
+	 * How far this mount can throw the shot it is loaded for, and at which elevation. The mirror of
+	 * {@link #solve} in every respect but one: instead of asking "which aim reaches THIS target", it asks
+	 * "what is the farthest landing point any aim inside the gun's window produces", measured where the shot
+	 * descends through the muzzle's own altitude - the same landing definition the search converges on.
+	 *
+	 * <p>Yaw is not searched. With no wind and no spread term the range curve is identical in every
+	 * direction, so the reach of a mount is a single number rather than a bearing table, and searching yaw
+	 * would only cost flights.
+	 *
+	 * <p>Charge is NOT searched either: the calculator cannot add powder, so the reach reported is the reach
+	 * of the load already in the bore. Autocannons have no charge at all, and both types are flown at
+	 * {@link MountSnapshot#muzzleSpeed()}, which is the speed CBC would actually launch next with.
+	 *
+	 * <p>Cost is one elevation scan plus a short refinement plus the verifying flight - roughly what a single
+	 * {@link #solve} costs - so callers run it on events (a card arriving, a load changing) rather than on
+	 * every readout tick.
+	 */
+	public static MaxReach maximumReach(MountSnapshot snapshot, AimEnvelope envelope) {
+		if (!snapshot.assembled() || !snapshot.canFireNext() || snapshot.muzzleSpeed() <= 0.0)
+			return MaxReach.NONE;
+		Vec3 muzzle = snapshot.muzzle();
+		double speed = snapshot.muzzleSpeed();
+		double planeY = muzzle.y;
+		int[] evaluations = new int[] { 0 };
+
+		RangePeak peak = scanMaxRange(snapshot, 0.0, speed, envelope, planeY, evaluations);
+		if (peak.peakRange() <= 0.0)
+			return MaxReach.NONE;
+
+		/*
+		 * The scan's resolution is the window's own sample spacing (a wide window on a small gun can put the
+		 * peak several degrees from where the true maximum is), so refine inside the bracket that brackets the
+		 * best sample. A single-peaked function makes the ternary narrowing below sound: whichever of the two
+		 * interior probes reaches farther rules out the third of the bracket on its own side.
+		 */
+		double from = envelope.samplePitch(Math.max(0, peak.bestIndex() - 1), peak.sampleCount());
+		double to = envelope.samplePitch(Math.min(peak.sampleCount(), peak.bestIndex() + 1), peak.sampleCount());
+		double pitch = refinePeakPitch(snapshot, 0.0, speed, planeY, from, to, evaluations);
+
+		evaluations[0]++;
+		TrajectoryComputer.Flight landing = TrajectoryComputer.simulateFree(snapshot,
+				directionFromAngles(0.0, pitch), speed, TrajectoryComputer.FreeStop.atAltitude(planeY));
+		if (landing.status() != LinkStatus.OK)
+			return MaxReach.NONE;
+		Vec3 impact = landing.impact();
+		return MaxReach.of(planDistance(muzzle, impact), muzzle.distanceTo(impact), pitch, landing.ticks());
+	}
+
+	/** The elevation of the range peak inside {@code from..to}, by successive bracket narrowing. */
+	private static double refinePeakPitch(MountSnapshot s, double yaw, double speed, double planeY,
+			double from, double to, int[] evaluations) {
+		double low = from;
+		double high = to;
+		for (int i = 0; i < REACH_REFINE_STEPS && high - low > 0.02 && evaluations[0] < MAX_EVALUATIONS; i++) {
+			double third = (high - low) / 3.0;
+			double flatSide = low + third;
+			double steepSide = high - third;
+			if (planRangeAt(s, yaw, flatSide, speed, planeY, evaluations)
+					< planRangeAt(s, yaw, steepSide, speed, planeY, evaluations))
+				low = flatSide;
+			else
+				high = steepSide;
+		}
+		return (low + high) * 0.5;
+	}
+
 	/* ------------------------------------------------------------------ candidate ranking */
 
 	/** Pick the better of two verified candidates, keeping the incumbent when the challenger is null. */

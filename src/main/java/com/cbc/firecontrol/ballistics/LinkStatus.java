@@ -34,7 +34,13 @@ public enum LinkStatus {
 	 * the charge cannot ignite it. NO_CHARGE says there is no powder; this says there is powder and nothing
 	 * to throw with it.
 	 */
-	NO_ROUND(false);
+	NO_ROUND(false),
+	/**
+	 * The linked mount's chunk is out of simulated space and the console has a ticket on it right now: terrain
+	 * is on its way, so the row says "loading" rather than "unloaded" about a chunk it is actively pulling in.
+	 * Appended last so every status above keeps the ordinal it is synced with.
+	 */
+	MOUNT_LOADING(false);
 
 	private final boolean hasSolution;
 

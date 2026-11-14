@@ -6,6 +6,7 @@ import java.util.List;
 import com.cbc.firecontrol.ballistics.AimOutcome;
 import com.cbc.firecontrol.ballistics.AimSolution;
 import com.cbc.firecontrol.ballistics.LinkStatus;
+import com.cbc.firecontrol.ballistics.MaxReach;
 import com.cbc.firecontrol.ballistics.TrajectoryPrediction;
 import com.cbc.firecontrol.block.entity.TrajectoryCalculatorBlockEntity;
 import com.cbc.firecontrol.client.TrajectoryCalculatorScreen;
@@ -44,6 +45,21 @@ public final class CalculatorTooltips {
 			return Component.translatable("cbc_firecontrol.calculator.readout.no_mount");
 		return Component.translatable("cbc_firecontrol.calculator.detail.mount", link.mount().getX(),
 				link.mount().getY(), link.mount().getZ());
+	}
+
+	/**
+	 * The row's mount reach as the short line a header can carry: the farthest landing point its next shot
+	 * makes, measured from that mount. Null when the row has nothing shootable, which its status already says -
+	 * printing "0" would read as a gun that cannot fire rather than as no gun at all.
+	 */
+	public static Component maxRangeLine(TrajectoryCalculatorBlockEntity be, int slot) {
+		if (be == null)
+			return null;
+		MaxReach reach = be.getMaxReach(slot);
+		if (!reach.reachable())
+			return null;
+		return Component.translatable("cbc_firecontrol.calculator.readout.max_range",
+				String.format("%.0f", reach.straightRange()));
 	}
 
 	/**
@@ -89,6 +105,8 @@ public final class CalculatorTooltips {
 		case BLOCK_HIT -> ConsoleTheme.COLOR_HIT;
 		case LIFETIME_END, OUT_OF_WORLD -> ConsoleTheme.COLOR_STALLED;
 		case EMPTY_SLOT, NOT_A_LINK, UNBOUND -> ConsoleTheme.TEXT_SECONDARY;
+		// Terrain is on its way for this row: not an error, and not ready either.
+		case MOUNT_LOADING -> ConsoleTheme.COLOR_STALLED;
 		default -> ConsoleTheme.COLOR_ERROR;
 		};
 	}
@@ -132,6 +150,20 @@ public final class CalculatorTooltips {
 		lines.add(Component.translatable("cbc_firecontrol.calculator.detail.impact",
 				Integer.toString((int) Math.round(p.impactX())), Integer.toString((int) Math.round(p.impactY())),
 				Integer.toString((int) Math.round(p.impactZ()))));
+		/*
+		 * The mount's own reach with the load it holds, which is what tells a gunner whether a target they are
+		 * considering is inside this gun at all. It is a property of the mount rather than of the target, so it
+		 * is shown whether or not a target has been entered, and it only moves when the gun or its powder does.
+		 */
+		if (be != null) {
+			MaxReach reach = be.getMaxReach(slot);
+			if (reach.reachable())
+				lines.add(Component.translatable("cbc_firecontrol.calculator.detail.max_range",
+						Component.literal(String.format("%.1f", reach.planRange())),
+						Component.literal(String.format("%.1f", reach.straightRange())),
+						Component.literal(String.format("%.2f", reach.pitchDeg())),
+						Component.literal(Integer.toString(reach.flightTicks()))));
+		}
 		if (p.barrelCount() > 0 || p.chargePower() > 0)
 			lines.add(Component.translatable("cbc_firecontrol.calculator.detail.gun",
 					Component.literal(Integer.toString(p.barrelCount())),

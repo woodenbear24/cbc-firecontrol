@@ -110,8 +110,14 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	public static final int TAB_BAR_X = 8;
 	public static final int TAB_BAR_Y = 2;
 	public static final int TAB_BAR_HEIGHT = 17;
-	public static final int TAB_WIDTH = 78;
 	public static final int TAB_GAP = 2;
+	/**
+	 * Cell width the page strip is built from, sized so that the pages fill the panel's content width:
+	 * {@code TAB_COUNT * TAB_WIDTH + (TAB_COUNT - 1) * TAB_GAP} stays within {@code PANEL_WIDTH - 16}, and the
+	 * handful of pixels the integer division gives back is left unclaimed at the strip's right edge. A page title
+	 * wider than a cell is truncated by {@link com.cbc.firecontrol.client.gui.TabBar}.
+	 */
+	public static final int TAB_WIDTH = (PANEL_WIDTH - 16 - (TAB_COUNT - 1) * TAB_GAP) / TAB_COUNT;
 	/* The strip's own width follows from the page count: TAB_COUNT * TAB_WIDTH + (TAB_COUNT - 1) * TAB_GAP. */
 	public static final int CONTENT_TOP = TAB_BAR_Y + TAB_BAR_HEIGHT + 2;
 	/**
@@ -122,6 +128,33 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	public static final int CHANNEL_SYNC_Y = CONTENT_TOP + 1;
 	public static final int CHANNEL_SYNC_W = 96;
 	public static final int CHANNEL_SYNC_H = 18;
+	/*
+	 * The target page's second block: the fire-mission wait window, entered as whole seconds. One field and one
+	 * commit button in a recessed strip, the live echo of what the console holds beside them, and three
+	 * explanation lines under the strip - the same strip shape the target entry uses above it, so the console
+	 * reads as one instrument. The page has no readout rows, so everything under the target strip belongs to
+	 * this block; the links page is what uses that band of the panel for its rows.
+	 */
+	public static final int TARGET_WAIT_HEADER_Y = TARGET_STRIP_BOTTOM + 4;
+	public static final int TARGET_WAIT_STRIP_Y = TARGET_WAIT_HEADER_Y + 15;
+	public static final int TARGET_WAIT_LABEL_X = 18;
+	public static final int TARGET_WAIT_FIELD_X = 48;
+	public static final int TARGET_WAIT_FIELD_W = 44;
+	public static final int TARGET_WAIT_SET_X = 96;
+	public static final int TARGET_WAIT_SET_W = 48;
+	public static final int TARGET_WAIT_ECHO_X = 152;
+	public static final int TARGET_WAIT_ECHO_W = PANEL_WIDTH - 16 - TARGET_WAIT_ECHO_X;
+	/** The recessed band behind the field reaches this far above and below it. */
+	public static final int TARGET_WAIT_STRIP_PAD_TOP = 5;
+	public static final int TARGET_WAIT_STRIP_PAD_BOTTOM = 8;
+	public static final int TARGET_WAIT_STRIP_BOTTOM = TARGET_WAIT_STRIP_Y - TARGET_WAIT_STRIP_PAD_TOP
+			+ TARGET_FIELD_H + TARGET_WAIT_STRIP_PAD_BOTTOM;
+	/**
+	 * First of the explanation lines under the strip; the rest follow one per {@code TARGET_WAIT_NOTE_LINE_H}.
+	 * The last of them must stay above {@code PANEL_HEIGHT}, which is what bounds this block.
+	 */
+	public static final int TARGET_WAIT_NOTE_Y = TARGET_WAIT_STRIP_BOTTOM + 8;
+	public static final int TARGET_WAIT_NOTE_LINE_H = 10;
 	/*
 	 * The tasks page's board: six columns, one queue each - the console's own queue first, then one per mount row,
 	 * so a column answers "what is this mount working on" instead of repeating the row readouts. Rows are entry

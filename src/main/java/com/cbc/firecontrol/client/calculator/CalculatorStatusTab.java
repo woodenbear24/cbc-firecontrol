@@ -8,6 +8,7 @@ import com.cbc.firecontrol.client.TrajectoryCalculatorScreen;
 import com.cbc.firecontrol.client.gui.ConsoleTheme;
 import com.cbc.firecontrol.menu.TrajectoryCalculatorMenu;
 
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
 
@@ -54,10 +55,24 @@ public class CalculatorStatusTab extends CalculatorTab {
 			int rowTop = rowTop(screen, i) - screen.panelTop();
 			int width = lineWidth(screen) - 16;
 
-			graphics.drawString(screen.consoleFont(),
-					fit(screen.consoleFont(), CalculatorTooltips.firstLine(i, status).append("  ")
-							.append(CalculatorTooltips.mountLine(screen, i)), width),
-					16, rowTop + 1, CalculatorTooltips.colorFor(status), false);
+			Component header = CalculatorTooltips.firstLine(i, status).append("  ")
+					.append(CalculatorTooltips.mountLine(screen, i));
+			graphics.drawString(screen.consoleFont(), fit(screen.consoleFont(), header, width), 16, rowTop + 1,
+					CalculatorTooltips.colorFor(status), false);
+			/*
+			 * The mount's own reach at the right end of that same line. It is the number that decides whether a
+			 * target is worth entering at all, and this line has nothing on it that needs the space. It is drawn
+			 * only when the header and the reach both fit without truncation: a row whose mount cannot be named
+			 * in full has no room to spare, and the reach is in the row's tooltip either way.
+			 */
+			Component reach = CalculatorTooltips.maxRangeLine(be, i);
+			if (reach != null) {
+				Font font = screen.consoleFont();
+				int reachWidth = font.width(reach);
+				if (font.width(header) + 6 + reachWidth <= width)
+					graphics.drawString(font, reach, 16 + width - reachWidth, rowTop + 1,
+							ConsoleTheme.TEXT_SECONDARY, false);
+			}
 
 			Component second = aiming && aim.outcome().hasSolution()
 					? aimReadout(aim)

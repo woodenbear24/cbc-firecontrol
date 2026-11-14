@@ -3,6 +3,7 @@ package com.cbc.firecontrol.block.entity;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -15,6 +16,7 @@ import com.cbc.firecontrol.ballistics.AimOutcome;
 import com.cbc.firecontrol.ballistics.AimSolution;
 import com.cbc.firecontrol.ballistics.InverseBallistics;
 import com.cbc.firecontrol.ballistics.LinkStatus;
+import com.cbc.firecontrol.ballistics.MaxReach;
 import com.cbc.firecontrol.ballistics.MountScanner;
 import com.cbc.firecontrol.ballistics.MountSnapshot;
 import com.cbc.firecontrol.ballistics.TrajectoryComputer;
@@ -34,7 +36,9 @@ import net.createmod.catnip.math.AngleHelper;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.TicketType;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
@@ -45,6 +49,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
@@ -98,20 +103,52 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 
 	/* ------------------------------------------------------------------ fire missions */
 
-	/**
-	 * Period of a mount's mission check in ticks. A mount that cannot take the order in front of it - no
-	 * assembled cannon, no shootable round, no solvable aim - is refused here, one refusal per period, until
-	 * its chances run out. Ten checks at ten ticks is a hundred ticks of grace, which is roughly how long a
-	 * breech takes to reload; a mount that is still unable after that loses the order rather than holding the
-	 * queue open for a gun nobody can fire.
-	 */
+	/** Period of a mount's mission check in ticks; a waiting order's age advances by this much per check. */
 	public static final int MISSION_CHECK_INTERVAL = 10;
-	/** Refusal chances a mount gets per mission before the console drops that mission from its queue. */
-	public static final int MISSION_REJECTIONS = 10;
+	/**
+	 * Default window a mount may hold an order it cannot take yet, in seconds. Five seconds is roughly what a
+	 * breech needs to reload, so a gun that is merely busy keeps its order; an order that this mount can never
+	 * solve is dropped at once rather than waiting out the window.
+	 */
+	public static final int DEFAULT_MISSION_WAIT_SECONDS = 5;
+	/** Bounds of that window as entered on the console's target page. */
+	public static final int MIN_MISSION_WAIT_SECONDS = 0;
+	public static final int MAX_MISSION_WAIT_SECONDS = 60;
 	/** Orders a console holds waiting for a mount before it starts discarding the oldest. */
 	public static final int MAX_PENDING_MISSIONS = 16;
 	/** Orders a single mount queue holds, including the one it is working on. */
 	public static final int MAX_MISSIONS_PER_MOUNT = 16;
+
+	/**
+	 * Slack added to a mount's own reach when the designator terrain walk asks whether a cell can be shot at.
+	 * The reach is measured to a landing point, and a cell is a block, so half a block of slack keeps a target
+	 * sitting right at the edge of a gun's envelope from being read as unreachable.
+	 */
+	private static final double PROBE_REACH_SLACK = 1.5;
+	/**
+	 * Ceiling on how far a designator terrain walk may travel, whatever the packet claims. The console's own
+	 * reach normally binds first; this only stops a modified client from asking for a strip of the map.
+	 */
+	private static final double MAX_PROBE_BLOCKS = 1024.0;
+
+	/**
+	 * Ticks a row keeps its ticket on a linked mount's chunk waiting for that terrain to arrive before the
+	 * attempt is given up. Generation is not instant, and this is the budget the row's LOADING verdict runs on.
+	 */
+	private static final int MOUNT_LOAD_TIMEOUT_TICKS = 100;
+	/** After an attempt fails, ticks a row waits before asking for the same chunk again. */
+	private static final int MOUNT_LOAD_RETRY_TICKS = 60;
+	/** Seconds a mount ticket outlives the console that filed it: the net for a console vanishing mid-load. */
+	private static final int MOUNT_LOAD_TICKET_SECONDS = 30;
+	/**
+	 * FULL ticket level. A console needs more than the chunk's blocks here: reading a row means its assembled
+	 * cannon contraption exists, which requires the chunk loaded AND ticking.
+	 */
+	private static final int MOUNT_LOAD_TICKET_LEVEL = 31;
+
+	private static final TicketType<BlockPos> MOUNT_LOAD_TICKET =
+			TicketType.create("cbc_firecontrol_console_mount", Comparator.comparingLong(BlockPos::asLong),
+					MOUNT_LOAD_TICKET_SECONDS);
 
 	/**
 	 * What a mount's front-of-queue order is doing, mirrored to clients for the tasks board. The phases are
@@ -121,7 +158,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	public enum MissionPhase {
 		/** No order in this mount's queue. */
 		NONE,
-		/** Accepted by nothing yet; its refusal chances are being spent while the mount cannot take it. */
+		/** Accepted by nothing yet; it ages in this mount's queue while the mount cannot take it. */
 		QUEUED,
 		/** Accepted: the link is driving this mount onto the order's aim. */
 		AIMING,
@@ -130,13 +167,18 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	}
 
 	/**
-	 * One order within one mount's queue. Server-side only: the client sees the phase and the chances left,
-	 * not this object.
+	 * One order within one mount's queue. Server-side only: the client sees the phase and the time left on the
+	 * order's wait window, not this object.
 	 */
 	private static final class MissionEntry {
 
 		private final FireMission mission;
-		private int rejectionsLeft = MISSION_REJECTIONS;
+		/**
+		 * Ticks this order has spent waiting in this queue for a mount that could not take it. An order is
+		 * dropped once this reaches the console's configured window, and immediately when the mount cannot
+		 * solve the order at all.
+		 */
+		private int waitedTicks;
 		/** The mount took this order and the row is driving onto it. */
 		private boolean active;
 		/** The order's shot went out; the entry is dropped on the next check. */
@@ -160,6 +202,12 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			linksChanged = true;
 			// Which slots count as "active" (and therefore transmit) depends on the inventory.
 			channelsChanged = true;
+			/*
+			 * The set of mounts this console commands changed, so every row's maximum range is re-derived on the
+			 * next recompute: a card pulled takes its number with it, a card inserted brings a new one, and a
+			 * card re-pointed at another mount changes the reach of the row it belongs to.
+			 */
+			reachAll = true;
 			/*
 			 * Pulling a card - or replacing it with another one - ends that row's orders outright: a queue is
 			 * that mount's, and the mount it belonged to is gone. The row is disarmed here rather than on the
@@ -188,6 +236,40 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	private final RoundState[] rounds = new RoundState[SLOTS];
 
 	/**
+	 * What each row's mount can throw its next shot, measured from that mount, mirrored to clients so the
+	 * console can show it and a designator can bound its search by it.
+	 */
+	private final MaxReach[] maxReach = new MaxReach[SLOTS];
+	/** The muzzle {@link #maxReach} was measured from, so a terrain walk can test cells against the gun. */
+	private final Vec3[] reachMuzzle = new Vec3[SLOTS];
+	/**
+	 * The load each row's reach was derived from. A reach only moves when the gun or its powder moves, so the
+	 * readout tick re-derives a row only when one of these differs from the mount's current scan - which is how
+	 * a fired round changing the charge, or a barrel being added, updates the number without a search running
+	 * every five ticks for every row. Firing readiness and the shell in the bore are part of the signature as
+	 * well: reach means what the gun can actually throw next, and another munition flies another curve.
+	 */
+	private final double[] reachCharge = new double[SLOTS];
+	private final double[] reachSpeed = new double[SLOTS];
+	private final int[] reachBarrels = new int[SLOTS];
+	private final boolean[] reachFires = new boolean[SLOTS];
+	private final String[] reachMunition = new String[SLOTS];
+	/** Set when every row must be re-derived at once, because the set of links itself changed. */
+	private boolean reachAll = true;
+	/** The designator sight line this console is loading terrain along, or null when no walk is running. */
+	private DesignatorProbe probe;
+
+	/**
+	 * Terrain each row is waiting on: the mount position a ticket is currently held for (null when that row is
+	 * not asking for anything), this attempt's remaining ticks, and the backoff left after an attempt failed.
+	 * A card pointing at a mount whose chunk is out of simulated space cannot be read at all, and the spotter
+	 * who just inserted it should not have to walk over there - so the console pulls that chunk in itself.
+	 */
+	private final BlockPos[] mountLoad = new BlockPos[SLOTS];
+	private final int[] mountLoadTicks = new int[SLOTS];
+	private final int[] mountLoadCooldown = new int[SLOTS];
+
+	/**
 	* Signal strength transmitted on each (slot, channel). Channel order is the mount radio's:
 	* yaw plus, yaw minus, pitch up, pitch down, fire.
 	*/
@@ -202,8 +284,8 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	/**
 	 * Fire missions. The console holds orders it has received but could not hand to any mount yet (no card is
 	 * in, or nothing is in range); every active row gets its own copy of each order it was given, and works
-	 * through that queue on its own. Queues diverge by design: a mount that refuses an order ten times loses
-	 * that order alone and moves on to the one behind it.
+	 * through that queue on its own. Queues diverge by design: a mount that cannot take an order drops it once
+	 * the order has waited its configured window in that queue alone, and moves on to the one behind it.
 	 */
 	private final List<FireMission> pendingMissions = new ArrayList<>();
 	@SuppressWarnings("unchecked")
@@ -212,12 +294,19 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	private int missionCooldown = MISSION_CHECK_INTERVAL;
 	/** Set whenever queues or phases moved, so the client copy is refreshed even if no aim did. */
 	private boolean missionsChanged;
+	/**
+	 * How long a mount may keep an order it cannot take, in seconds, entered on the target page's window block.
+	 * This is read
+	 * live rather than stamped onto an order at hand-off: lengthening the window also rescues the orders that
+	 * are already waiting, and shortening it lets stale ones go sooner.
+	 */
+	private int missionWaitSeconds = DEFAULT_MISSION_WAIT_SECONDS;
 
 	/* Client mirror of the mission state, shipped in the data packet for the tasks board. */
 	private final List<FireMission> clientMissions = new ArrayList<>();
 	private final int[] missionQueueSizes = new int[SLOTS];
 	private final int[] missionPhases = new int[SLOTS];
-	private final int[] missionRejectionsLeft = new int[SLOTS];
+	private final int[] missionTtlLeft = new int[SLOTS];
 	private final double[] missionFrontX = new double[SLOTS];
 	private final double[] missionFrontY = new double[SLOTS];
 	private final double[] missionFrontZ = new double[SLOTS];
@@ -287,6 +376,13 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		Arrays.fill(predictions, TrajectoryPrediction.EMPTY);
 		Arrays.fill(aims, AimSolution.EMPTY);
 		Arrays.fill(rounds, RoundState.READY);
+		Arrays.fill(maxReach, MaxReach.NONE);
+		Arrays.fill(reachMuzzle, Vec3.ZERO);
+		Arrays.fill(reachCharge, Double.NaN);
+		Arrays.fill(reachSpeed, Double.NaN);
+		Arrays.fill(reachBarrels, -1);
+		Arrays.fill(reachFires, false);
+		Arrays.fill(reachMunition, "");
 		Arrays.fill(previousError, Double.NaN);
 		Arrays.fill(smoothedRate, Double.NaN);
 		for (int slot = 0; slot < SLOTS; slot++)
@@ -408,6 +504,20 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			missionCooldown = MISSION_CHECK_INTERVAL;
 			tickMissions(level);
 		}
+		/*
+		 * A designator line that found nothing in the client's simulated space: walk it forward on the server,
+		 * pulling in the chunks ahead of it until either a cell the guns can shoot at turns up or the line
+		 * leaves their reach. It runs on its own clock because its pace is set by terrain arriving, not by the
+		 * readout cadence.
+		 */
+		tickDesignatorProbe();
+		/*
+		* Rows waiting on terrain keep their own clock running even while nothing else about them changes: the
+		* backoff between load attempts has to count down whether or not a recompute happens to fire.
+		*/
+		for (int slot = 0; slot < SLOTS; slot++)
+			if (mountLoadCooldown[slot] > 0)
+				mountLoadCooldown[slot]--;
 		if (recomputeCooldown-- <= 0) {
 			recomputeCooldown = RECOMPUTE_INTERVAL;
 			recomputeAndSync();
@@ -431,22 +541,30 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		TrajectoryPrediction[] fresh = new TrajectoryPrediction[SLOTS];
 		AimSolution[] freshAims = new AimSolution[SLOTS];
 		RoundState[] freshRounds = new RoundState[SLOTS];
+		MaxReach[] freshReach = new MaxReach[SLOTS];
+		Vec3[] freshMuzzle = new Vec3[SLOTS];
 		boolean changed = false;
 		for (int slot = 0; slot < SLOTS; slot++) {
 			SlotResult result = resolveSlot(level, slot, false, missionAimTarget(slot));
 			fresh[slot] = result.prediction();
 			freshAims[slot] = result.aim();
 			freshRounds[slot] = result.snapshot() == null ? RoundState.READY : result.snapshot().round();
+			freshReach[slot] = recomputeReach(slot, result);
+			freshMuzzle[slot] = freshReach[slot].reachable() ? result.snapshot().muzzle() : Vec3.ZERO;
 			if (!fresh[slot].equals(predictions[slot]) || !sameAim(freshAims[slot], aims[slot])
-					|| freshRounds[slot] != rounds[slot])
+					|| freshRounds[slot] != rounds[slot] || !MaxReach.same(freshReach[slot], maxReach[slot]))
 				changed = true;
 		}
+		// The rows have been measured against the current links, whatever the answer was.
+		reachAll = false;
 		if (!changed && !aimStateChanged && !missionsChanged)
 			return;
 
 		System.arraycopy(fresh, 0, predictions, 0, SLOTS);
 		System.arraycopy(freshAims, 0, aims, 0, SLOTS);
 		System.arraycopy(freshRounds, 0, rounds, 0, SLOTS);
+		System.arraycopy(freshReach, 0, maxReach, 0, SLOTS);
+		System.arraycopy(freshMuzzle, 0, reachMuzzle, 0, SLOTS);
 		setChanged();
 		sendData();
 		aimStateChanged = false;
@@ -572,6 +690,24 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		UUID wantedId = link.mountIdOrNull();
 		BlockPos target = link.mount();
 
+		// A mount outside the wireless link range is never read, loaded or not.
+		if (target.getCenter().distanceTo(getBlockPos().getCenter()) > LINK_RANGE)
+			return SlotResult.of(LinkStatus.OUT_OF_RANGE);
+
+		/*
+		* Reading a mount needs its chunk in: the block entity, its assembled cannon, and the contraption that
+		* carries the gun all exist only while that chunk is loaded. So the console asks for the chunk here,
+		* ahead of the lookups - the id index only knows about mounts whose chunks are loaded, which would make
+		* a card pointing at a gun nobody has walked near answer "not a mount" instead of "loading", and the row
+		* resolves itself the moment the terrain arrives on the next recompute.
+		*/
+		if (!level.isLoaded(target))
+			return SlotResult.of(level instanceof ServerLevel server
+					? requestMountLoad(server, slot, target)
+					: LinkStatus.MOUNT_UNLOADED);
+		if (mountLoad[slot] != null)
+			releaseMountLoad(level, slot); // terrain arrived; hand the chunk back to its normal lifecycle
+
 		/*
 		* Two ways a card can be pointing at a mount:
 		*   - the cached coordinates still hold THAT mount (the fast, normal case), or
@@ -589,19 +725,12 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			// Self-heal the card so the next recompute takes the fast path, and persist the corrected link.
 			stack.set(CBCItems.CALCULATOR_LINK_DATA.get(), link.withMount(found));
 			setChanged();
-			target = found;
 			mount = asMount(level.getBlockEntity(found), wantedId);
 			if (mount == null)
 				return SlotResult.of(LinkStatus.NOT_A_MOUNT);
 		}
 		if (mount == null)
 			return SlotResult.of(LinkStatus.NOT_A_MOUNT);
-
-		if (target.getCenter().distanceTo(getBlockPos().getCenter()) > LINK_RANGE)
-			return SlotResult.of(LinkStatus.OUT_OF_RANGE);
-		// The scan needs the mount's assembled contraption, which only exists while its chunk is loaded.
-		if (!level.isLoaded(target))
-			return SlotResult.of(LinkStatus.MOUNT_UNLOADED);
 
 		MountSnapshot snapshot = MountScanner.scan(mount);
 		if (!snapshot.assembled())
@@ -639,6 +768,78 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		return new AimEnvelope(minDeg, maxDeg, charge, charge, 1.0);
 	}
 
+	/* ------------------------------------------------------------------ the bound mounts' maximum range */
+
+	/**
+	 * The row's mount reach, re-derived only when it can actually have moved: the set of links changed
+	 * ({@link #reachAll}), or this mount's own load did - the charge a fired round consumed, a barrel added or
+	 * taken away, a different munition. Otherwise the previous number stands, which is what keeps a reach search
+	 * (as expensive as one solve) off the five-tick readout cadence.
+	 */
+	private MaxReach recomputeReach(int slot, SlotResult result) {
+		MountSnapshot snap = result.snapshot();
+		if (snap == null || !snap.assembled()) {
+			// Reset the signature so the next scan that does see a gun is recognised as a change and measured.
+			reachCharge[slot] = Double.NaN;
+			reachSpeed[slot] = Double.NaN;
+			reachBarrels[slot] = -1;
+			reachFires[slot] = false;
+			reachMunition[slot] = "";
+			return MaxReach.NONE;
+		}
+		if (!reachAll && snap.chargePower() == reachCharge[slot] && snap.muzzleSpeed() == reachSpeed[slot]
+				&& snap.barrelCount() == reachBarrels[slot] && snap.canFireNext() == reachFires[slot]
+				&& snap.munitionKey().equals(reachMunition[slot]))
+			return maxReach[slot];
+		reachCharge[slot] = snap.chargePower();
+		reachSpeed[slot] = snap.muzzleSpeed();
+		reachBarrels[slot] = snap.barrelCount();
+		reachFires[slot] = snap.canFireNext();
+		reachMunition[slot] = snap.munitionKey();
+		return InverseBallistics.maximumReach(snap, aimEnvelopeFor(result.mount(), snap));
+	}
+
+	/** How far this row's mount can throw its next shot, measured from its own muzzle. NONE when there is no gun. */
+	public MaxReach getMaxReach(int slot) {
+		if (slot < 0 || slot >= SLOTS)
+			return MaxReach.NONE;
+		return maxReach[slot] == null ? MaxReach.NONE : maxReach[slot];
+	}
+
+	/**
+	 * The console's reach: the farthest landing point any of its rows can make, measured from the mount that
+	 * makes it. NaN when no row currently has a shootable gun, which is what stops a designator from loading
+	 * terrain for guns this console does not command yet.
+	 */
+	public double maxConsoleRange() {
+		double best = Double.NaN;
+		for (int slot = 0; slot < SLOTS; slot++) {
+			MaxReach reach = getMaxReach(slot);
+			if (!reach.reachable())
+				continue;
+			if (Double.isNaN(best) || reach.straightRange() > best)
+				best = reach.straightRange();
+		}
+		return best;
+	}
+
+	/**
+	 * Whether a cell the designator's terrain walk came to sits inside the reach of at least one of this
+	 * console's mounts. Tested against each mount's own muzzle rather than against the console: the reach belongs
+	 * to the gun, and a mount on the far side of the console extends the area this console can shoot at.
+	 */
+	boolean probeCovers(BlockPos cell) {
+		Vec3 point = cell.getCenter();
+		for (int slot = 0; slot < SLOTS; slot++) {
+			MaxReach reach = maxReach[slot];
+			if (reach == null || !reach.reachable())
+				continue;
+			if (reachMuzzle[slot].distanceTo(point) <= reach.straightRange() + PROBE_REACH_SLACK)
+				return true;
+		}
+		return false;
+	}
+
 	/** The block entity at the cached coordinates, but only when it is the mount the card actually means. */
 	private static AdvancedCannonMountBlockEntity asMount(BlockEntity candidate, UUID wantedId) {
 		if (!(candidate instanceof AdvancedCannonMountBlockEntity mount))
@@ -646,6 +847,168 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		if (wantedId == null)
 			return mount; // legacy card: coordinates decide, as before mount ids existed
 		return wantedId.equals(mount.mountId()) ? mount : null;
+	}
+
+	/* ------------------------------------------------------------------ designator terrain walk */
+
+	/**
+	 * Load terrain along a designator sight line that ran out of simulated space without finding anything.
+	 *
+	 * <p>The client can only walk the line through chunks it already has, so its "nothing along the scope line"
+	 * really means "nothing I can see". The server is the one that knows what the guns can reach, so it decides
+	 * whether the rest of the line is worth loading at all: a console that commands no shootable gun loads
+	 * nothing, and a walk is bounded by the farthest mount's own landing point rather than by the world border.
+	 *
+	 * <p>{@code scanned} is how far the client already walked, so the walk starts there instead of re-testing
+	 * cells the spotter's own client had already answered for.
+	 */
+	public void requestDesignatorProbe(ServerPlayer player, Vec3 origin, Vec3 direction, double scanned,
+			double rayDistance) {
+		Level level = getLevel();
+		if (!(level instanceof ServerLevel serverLevel))
+			return;
+		if (!isFinite(origin) || !isFinite(direction) || direction.lengthSqr() < 1.0e-9 || !(rayDistance > scanned))
+			return; // no line to follow, or nothing left of it beyond what the client already covered
+
+		/*
+		 * Reaches come out of a recompute. A console whose chunk just loaded, or that took a card this very
+		 * tick, has none yet - measure now rather than refuse a spotter's click on a console that can answer.
+		 */
+		if (Double.isNaN(maxConsoleRange()))
+			recomputeAndSync();
+		double range = maxConsoleRange();
+		if (!(range > 0.0)) {
+			player.displayClientMessage(Component.translatable(
+					"cbc_firecontrol.calculator.target_designator.probe_no_mount"), true);
+			return;
+		}
+
+		/*
+		 * Two bounds, whichever is nearer: what is still left of the sight line (the client says the line ends
+		 * at the world border), and the console's reach measured from its own position - the walk starts at the
+		 * spotter's eye, so cells that far along can still be inside a mount's envelope. The client's already
+		 * covered prefix is added back on because the walk runs from the eye and re-reads those cells cheaply:
+		 * re-testing loaded terrain is two ticks of block reads, and it keeps the walk's own notion of distance
+		 * the same one the client's message quotes.
+		 */
+		double remaining = Math.min(MAX_PROBE_BLOCKS,
+				Math.min(rayDistance - scanned, range + origin.distanceTo(worldPosition.getCenter())));
+		double cap = scanned + remaining;
+		if (remaining <= 1.0)
+			return;
+		if (probe != null)
+			probe.release();
+		probe = new DesignatorProbe(serverLevel, player, origin, direction, cap);
+	}
+
+	/** Advances the walk in flight, and answers the spotter once it has an answer to give. */
+	private void tickDesignatorProbe() {
+		if (probe == null)
+			return;
+		DesignatorProbe.Result result = probe.advance(this);
+		if (result == DesignatorProbe.Result.SEARCHING)
+			return;
+		DesignatorProbe walk = probe;
+		probe = null;
+		walk.release();
+		if (walk.player.isRemoved())
+			return;
+		if (result == DesignatorProbe.Result.FOUND) {
+			applyDesignatorLock(walk.player, walk.foundCell());
+		} else if (result == DesignatorProbe.Result.TERRAIN_TIMEOUT) {
+			walk.player.displayClientMessage(Component.translatable(
+					"cbc_firecontrol.calculator.target_designator.probe_stalled",
+					String.format(Locale.ROOT, "%.0f", walk.travelled())), true);
+		} else {
+			walk.player.displayClientMessage(Component.translatable(
+					"cbc_firecontrol.calculator.target_designator.probe_none",
+					String.format(Locale.ROOT, "%.0f", maxConsoleRange())), true);
+		}
+	}
+
+	/** Frees the chunks a walk was holding open without answering anyone: the console itself is going away. */
+	private void releaseProbe() {
+		if (probe == null)
+			return;
+		probe.release();
+		probe = null;
+	}
+
+	/**
+	 * Pull a linked mount's chunk into simulated space so that row can be read at all.
+	 *
+	 * <p>One ticket per waiting row, held for {@link #MOUNT_LOAD_TIMEOUT_TICKS}: a spotter who puts a card into
+	 * a slot pointing at a gun nobody has walked near yet should get a readout rather than "unloaded" forever,
+	 * and asking for terrain is exactly what the console's designator walk already does for the target side of
+	 * the same problem. Nothing is loaded synchronously - the row simply reports LOADING while the ticket is
+	 * out, and the next recompute picks the mount up the moment its chunk is in.
+	 *
+	 * <p>A ticket that expires without the terrain arriving releases the chunk and starts a backoff, so a mount
+	 * that cannot be reached (a chunk outside the world border, or a server that cannot generate it fast
+	 * enough) does not keep the world generating indefinitely.
+	 */
+	private LinkStatus requestMountLoad(ServerLevel level, int slot, BlockPos target) {
+		if (mountLoad[slot] != null && !mountLoad[slot].equals(target))
+			releaseMountLoad(level, slot); // the card was re-pointed while a ticket was still out
+		if (mountLoad[slot] == null) {
+			if (mountLoadCooldown[slot] > 0)
+				return LinkStatus.MOUNT_UNLOADED;
+			ChunkPos chunk = new ChunkPos(target);
+			level.getChunkSource().addRegionTicket(MOUNT_LOAD_TICKET, chunk, MOUNT_LOAD_TICKET_LEVEL, target);
+			mountLoad[slot] = target;
+			mountLoadTicks[slot] = MOUNT_LOAD_TIMEOUT_TICKS;
+			CBCFireControl.LOGGER.debug("[cbc_firecontrol] console at {} ticketed chunk {} for slot {}",
+					worldPosition, chunk, slot);
+			return LinkStatus.MOUNT_LOADING;
+		}
+		if (--mountLoadTicks[slot] > 0)
+			return LinkStatus.MOUNT_LOADING;
+		releaseMountLoad(level, slot);
+		mountLoadCooldown[slot] = MOUNT_LOAD_RETRY_TICKS;
+		return LinkStatus.MOUNT_UNLOADED;
+	}
+
+	/** Drops one row's ticket. Idempotent: a row that never asked for terrain has nothing to give back. */
+	private void releaseMountLoad(Level level, int slot) {
+		BlockPos target = mountLoad[slot];
+		mountLoad[slot] = null;
+		mountLoadTicks[slot] = 0;
+		if (target == null || !(level instanceof ServerLevel server))
+			return;
+		ChunkPos chunk = new ChunkPos(target);
+		server.getChunkSource().removeRegionTicket(MOUNT_LOAD_TICKET, chunk, MOUNT_LOAD_TICKET_LEVEL, target);
+		CBCFireControl.LOGGER.debug("[cbc_firecontrol] console at {} released chunk {} of slot {}",
+				worldPosition, chunk, slot);
+	}
+
+	/** Frees every row's ticket at once: this console is going away and owes nobody any terrain. */
+	private void releaseMountLoads() {
+		Level level = getLevel();
+		if (level == null)
+			return;
+		for (int slot = 0; slot < SLOTS; slot++)
+			releaseMountLoad(level, slot);
+	}
+
+	/**
+	 * Take a cell as this console's target and file it as a fire mission, answering the spotter on the actionbar
+	 * with the block they locked and how many mount queues took the order. Shared by the direct middle click and
+	 * by a terrain walk that found something past the client's simulated space, so both routes read the same and
+	 * the lock and its outcome stay on one line instead of overwriting each other.
+	 */
+	public void applyDesignatorLock(ServerPlayer player, BlockPos cell) {
+		Level level = getLevel();
+		if (level == null || level.isClientSide())
+			return;
+		setTarget(cell.getX(), cell.getY(), cell.getZ());
+		int handed = addMission(cell.getX(), cell.getY(), cell.getZ());
+		player.displayClientMessage(Component.translatable(
+				"cbc_firecontrol.calculator.target_designator.locked_mission",
+				level.getBlockState(cell).getBlock().getName(), cell.getX(), cell.getY(), cell.getZ(), handed), true);
+	}
+
+	private static boolean isFinite(Vec3 v) {
+		return Double.isFinite(v.x) && Double.isFinite(v.y) && Double.isFinite(v.z);
 	}
 
 	@Override
@@ -660,9 +1023,11 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		tag.putDouble("TargetX", targetX);
 		tag.putDouble("TargetY", targetY);
 		tag.putDouble("TargetZ", targetZ);
+		tag.putInt("MissionWait", missionWaitSeconds);
 		if (clientPacket) {
 			tag.put("Solutions", writeSolutions());
 			tag.put("Aims", writeAims());
+			tag.put("MaxRanges", writeReach());
 			tag.put("MissionView", writeMissionView());
 		} else {
 			tag.put("Missions", writePendingMissions());
@@ -693,12 +1058,16 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		targetX = tag.getDouble("TargetX");
 		targetY = tag.getDouble("TargetY");
 		targetZ = tag.getDouble("TargetZ");
+		if (tag.contains("MissionWait"))
+			missionWaitSeconds = clampMissionWaitSeconds(tag.getInt("MissionWait"));
 		// Both sides re-register on read: the server builds its transmitters, the client refreshes its view.
 		channelsChanged = true;
 		if (tag.contains("Solutions"))
 			readSolutions(tag.getList("Solutions", Tag.TAG_COMPOUND));
 		if (tag.contains("Aims"))
 			readAims(tag.getList("Aims", Tag.TAG_COMPOUND));
+		if (tag.contains("MaxRanges"))
+			readReach(tag.getList("MaxRanges", Tag.TAG_COMPOUND));
 		/*
 		 * Missions are read last: deserializing the inventory fires onContentsChanged, which deletes the
 		 * queue of any row whose card changed, and the stored queues have to survive that. The client only
@@ -794,6 +1163,42 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 
 	private static boolean sameNumber(double a, double b) {
 		return a == b || (Double.isNaN(a) && Double.isNaN(b));
+	}
+
+	/**
+	 * The reach of each row's mount, shipped with the rest of the client packet. It travels as plain numbers
+	 * rather than being re-derived client-side: the search that produces it needs CBC's mount scan, which only
+	 * exists on the server.
+	 */
+	private ListTag writeReach() {
+		ListTag list = new ListTag();
+		for (int slot = 0; slot < SLOTS; slot++) {
+			MaxReach reach = getMaxReach(slot);
+			CompoundTag entry = new CompoundTag();
+			entry.putBoolean("Reachable", reach.reachable());
+			entry.putDouble("Plan", reach.planRange());
+			entry.putDouble("Straight", reach.straightRange());
+			entry.putDouble("Pitch", reach.pitchDeg());
+			entry.putInt("Ticks", reach.flightTicks());
+			list.add(entry);
+		}
+		return list;
+	}
+
+	private void readReach(ListTag list) {
+		for (int slot = 0; slot < SLOTS; slot++) {
+			if (slot >= list.size()) {
+				maxReach[slot] = MaxReach.NONE;
+				continue;
+			}
+			CompoundTag entry = list.getCompound(slot);
+			if (!entry.getBoolean("Reachable")) {
+				maxReach[slot] = MaxReach.NONE;
+				continue;
+			}
+			maxReach[slot] = new MaxReach(true, entry.getDouble("Plan"), entry.getDouble("Straight"),
+					entry.getDouble("Pitch"), entry.getInt("Ticks"));
+		}
 	}
 
 	/**
@@ -903,7 +1308,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	/**
 	 * Hand every pending order to every active row that has room for it. An order leaves the console's
 	 * pending list as soon as at least one mount took it: from then on its fate belongs to those per-mount
-	 * queues, which may diverge - one mount can drop it on exhausted refusals while another fires it.
+	 * queues, which may diverge - one mount can drop it once its wait window is spent while another fires it.
 	 */
 	private int dispatchPendingMissions() {
 		if (pendingMissions.isEmpty())
@@ -931,15 +1336,19 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	 * The mission cadence: one check per mount queue every {@link #MISSION_CHECK_INTERVAL} ticks.
 	 *
 	 * <p>The front order of a queue is re-tested from scratch every check - the mount is there, its cannon
-	 * assembled, its breech able to fire the next shot, the order solvable from where the gun stands. A
-	 * mount that fails spends one of its {@link #MISSION_REJECTIONS} chances; at zero the order is deleted
-	 * from that queue only, and the queue moves on. A mount that passes gets the row armed onto the order's
-	 * aim, and once the drive loop reports the row inside the deadband the order's shot goes out over the
-	 * wireless fire channel; the order is then dropped on the following tick and the order behind it is tested at the next check.
+	 * assembled, its breech able to fire the next shot, the order solvable from where the gun stands. A mount
+	 * that is merely busy - no assembled cannon yet, no shootable round, still reloading - ages the order by
+	 * one check interval, and the order leaves that queue once it has waited the window configured on the
+	 * target page. An order this mount cannot solve at all (out of reach, or the barrel's path is blocked) is
+	 * dropped on the spot: waiting cannot make an impossible shot possible, and holding the queue open for it
+	 * would starve the orders behind it. A mount that passes gets the row armed onto the order's aim, and once
+	 * the drive loop reports the row inside the deadband the order's shot goes out over the wireless fire
+	 * channel; the order is then dropped on the following tick and the order behind it is tested at the next
+	 * check.
 	 *
 	 * <p>Acceptance is deliberately re-checked rather than trusted once: a gun can be taken apart, disarmed
-	 * or reloaded out from under an order that was accepted a second ago, and refusing it again is what the
-	 * chances are for.
+	 * or reloaded out from under an order that was accepted a second ago, and aging it again is what the wait
+	 * window is for.
 	 */
 	private void tickMissions(Level level) {
 		dispatchPendingMissions();
@@ -962,15 +1371,22 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 				continue;
 			}
 			SlotResult result = resolveSlot(level, slot, true, entry.mission.asVec());
-			boolean able = result.mount() != null && result.snapshot() != null
-					&& result.snapshot().canFireNext() && result.aim() != null && result.aim().hasSolution();
-			if (!able) {
-				entry.rejectionsLeft--;
+			boolean mounted = result.mount() != null && result.snapshot() != null;
+			boolean loaded = mounted && result.snapshot().canFireNext();
+			boolean solvable = loaded && result.aim() != null && result.aim().hasSolution();
+			if (!solvable) {
 				if (entry.active)
 					disarmMissionRow(level, slot);
 				entry.active = false;
-				if (entry.rejectionsLeft <= 0)
+				if (mounted && loaded) {
+					/* Nothing to fire at this target: waiting cannot make it solvable, so the window is spent. */
 					queue.pollFirst();
+				} else {
+					/* The gun is only busy: age the order and give up once its window is used up. */
+					entry.waitedTicks += MISSION_CHECK_INTERVAL;
+					if (entry.waitedTicks >= missionWaitTicks())
+						queue.pollFirst();
+				}
 				changed = true;
 				continue;
 			}
@@ -1064,9 +1480,41 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		return index >= 0 && index < phases.length ? phases[index] : MissionPhase.NONE;
 	}
 
-	/** Client view: refusal chances left on this mount's front order. */
-	public int missionRejectionsLeft(int slot) {
-		return slot >= 0 && slot < SLOTS ? missionRejectionsLeft[slot] : 0;
+	/** Client view: ticks left on this mount's front order before its queue drops it. */
+	public int missionTtlLeft(int slot) {
+		return slot >= 0 && slot < SLOTS ? missionTtlLeft[slot] : 0;
+	}
+
+	/** Both sides: how long a mount may keep an order it cannot take, in seconds. */
+	public int missionWaitSeconds() {
+		return missionWaitSeconds;
+	}
+
+	/** Server side: that window in ticks, which is what a waiting order is measured against. */
+	private int missionWaitTicks() {
+		return missionWaitSeconds * 20;
+	}
+
+	/**
+	 * Server side: the window entered on the target page. It is read live by the check loop rather than
+	 * stamped onto orders, so lengthening it also rescues the orders already waiting and shortening it lets
+	 * the oldest of them go on the next check.
+	 */
+	public void setMissionWaitSeconds(int seconds) {
+		int clamped = clampMissionWaitSeconds(seconds);
+		if (clamped == missionWaitSeconds)
+			return;
+		missionWaitSeconds = clamped;
+		/* The remaining time the tasks board shows is measured against this window, so redraw it now. */
+		missionsChanged = true;
+		setChanged();
+		sendData();
+	}
+
+	private static int clampMissionWaitSeconds(int seconds) {
+		if (seconds < MIN_MISSION_WAIT_SECONDS)
+			return MIN_MISSION_WAIT_SECONDS;
+		return seconds > MAX_MISSION_WAIT_SECONDS ? MAX_MISSION_WAIT_SECONDS : seconds;
 	}
 
 	/** Client view: the impact point of this mount's front order. */
@@ -1090,7 +1538,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			ListTag orders = new ListTag();
 			for (MissionEntry mission : missionQueues[slot]) {
 				CompoundTag order = mission.mission.write(new CompoundTag());
-				order.putInt("R", mission.rejectionsLeft);
+				order.putInt("W", mission.waitedTicks);
 				orders.add(order);
 			}
 			entry.put("Orders", orders);
@@ -1108,8 +1556,10 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			for (Tag entry : orders) {
 				CompoundTag order = (CompoundTag) entry;
 				MissionEntry mission = new MissionEntry(FireMission.read(order));
-				mission.rejectionsLeft = order.getInt("R");
-				missionQueues[slot].addLast(mission);
+				mission.waitedTicks = order.getInt("W");
+				/* An order whose window was already spent at the last save is not carried over. */
+				if (mission.waitedTicks < missionWaitTicks())
+					missionQueues[slot].addLast(mission);
 			}
 		}
 		missionsChanged = true;
@@ -1135,7 +1585,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 				MissionPhase phase = front.fired ? MissionPhase.FIRING
 						: front.active ? MissionPhase.AIMING : MissionPhase.QUEUED;
 				entry.putInt("Phase", phase.ordinal());
-				entry.putInt("Rejections", front.rejectionsLeft);
+				entry.putInt("Ttl", ttlLeft(front));
 				front.mission.write(entry);
 			} else {
 				entry.putInt("Phase", MissionPhase.NONE.ordinal());
@@ -1144,6 +1594,12 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		}
 		view.put("Slots", slots);
 		return view;
+	}
+
+	/** Ticks of the configured window this order still has left, which is all the tasks board needs. */
+	private int ttlLeft(MissionEntry entry) {
+		int left = missionWaitTicks() - entry.waitedTicks;
+		return left > 0 ? left : 0;
 	}
 
 	private void readMissionView(CompoundTag view) {
@@ -1155,13 +1611,13 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			if (slot >= slots.size()) {
 				missionQueueSizes[slot] = 0;
 				missionPhases[slot] = MissionPhase.NONE.ordinal();
-				missionRejectionsLeft[slot] = 0;
+				missionTtlLeft[slot] = 0;
 				continue;
 			}
 			CompoundTag entry = slots.getCompound(slot);
 			missionQueueSizes[slot] = entry.getInt("Size");
 			missionPhases[slot] = entry.getInt("Phase");
-			missionRejectionsLeft[slot] = entry.getInt("Rejections");
+			missionTtlLeft[slot] = entry.getInt("Ttl");
 			missionFrontX[slot] = entry.getDouble("X");
 			missionFrontY[slot] = entry.getDouble("Y");
 			missionFrontZ[slot] = entry.getDouble("Z");
@@ -1712,12 +2168,16 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 
 	@Override
 	public void remove() {
+		releaseProbe();
+		releaseMountLoads();
 		unregisterTransmitters();
 		super.remove();
 	}
 
 	@Override
 	public void onChunkUnloaded() {
+		releaseProbe();
+		releaseMountLoads();
 		unregisterTransmitters();
 		super.onChunkUnloaded();
 	}
