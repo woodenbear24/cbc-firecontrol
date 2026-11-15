@@ -37,8 +37,9 @@ import net.neoforged.neoforge.common.ItemAbilities;
  * <li>{@code ItemAbilities.SPYGLASS_SCOPE} via {@link #canPerformAction} -> NeoForge's patched
  *     {@code Player#isScoping()} becomes true, which is what {@code Gui#render} uses to draw the scope vignette
  *     ({@code Gui#renderSpyglassOverlay}, whose texture comes from
- *     {@code IClientItemExtensions#getScopeOverlayTexture}, i.e. vanilla's
- *     {@code Gui.SPYGLASS_SCOPE_LOCATION}). No client-side overlay code is needed here for that.</li>
+ *     {@code IClientItemExtensions#getScopeOverlayTexture}). That texture is overridden for this item so an
+ *     OFF-HAND scope zooms without the vignette, keeping the sight line the console is following unobscured; a
+ *     main-hand scope keeps vanilla's ring.</li>
  * </ol>
  *
  * <p>The one thing vanilla does NOT give a modded item is the zoom: {@code GameRenderer#getFov} hardcodes
@@ -50,6 +51,10 @@ import net.neoforged.neoforge.common.ItemAbilities;
  * click locks the block the crosshair sits on into that calculator and orders its mounts onto it. The binding is
  * the credential for that order: binding requires standing next to the console, so a spotter who was allowed to
  * bind is allowed to shoot the console from wherever their designator reaches.
+ *
+ * <p>A designator parked in the OFF hand is the head-aim sight line rather than an optic, and since vanilla's
+ * right-click never asks the off hand, its zoom comes from {@link com.cbc.firecontrol.client.CBCFCKeyMappings} -
+ * hold the scope key and the server puts the off-hand item into use, which is what raises the FOV without a ring.
  */
 public class TargetDesignatorItem extends Item {
 
@@ -164,17 +169,20 @@ public class TargetDesignatorItem extends Item {
 			return InteractionResultHolder.fail(stack);
 		}
 		/*
-		 * A BOUND designator in the off hand is the trigger for head aiming, not a scope: raising the zoom there
-		 * would hide the very sight line the console is following behind the vignette, and a middle click inside
-		 * that scope would try to file an order on a console that is being pointed by hand. Unbound still scopes
-		 * exactly as vanilla's spyglass does, so an off-hand designator that binds to nothing is only a glass.
+		 * Reaching here means the MAIN hand used this item: vanilla's right-click only ever asks the main hand, so
+		 * an off-hand designator scopes through its own key instead
+		 * ({@code key.cbc_firecontrol.designator_scope}, carried by
+		 * {@link com.cbc.firecontrol.network.DesignatorScopePayload} and started here by the server - see
+		 * {@code CBCFCNetwork#handleDesignatorScope}). Both hands end up in the same use state, and the two differ
+		 * only in what the client draws and allows:
+		 *
+		 * <p>The off-hand zoom is drawn WITHOUT the spyglass vignette, so the sight line stays readable end to end -
+		 * see {@code CBCFCClientEvents}'s {@code getScopeOverlayTexture} override. And a middle click from there
+		 * files nothing: {@code CBCFCNetwork#canDesignatorMark} refuses an order handed to a console that is being
+		 * pointed by hand, which is the same thing the console's Aim button and fire missions are shut against while
+		 * the claim lasts. Unbound still scopes exactly as vanilla's spyglass does, so a designator that binds to
+		 * nothing is only a glass.
 		 */
-		if (hand == InteractionHand.OFF_HAND && bindingOf(stack) != null) {
-			if (!level.isClientSide)
-				player.displayClientMessage(
-						Component.translatable("item.cbc_firecontrol.target_designator.offhand_head_aim"), true);
-			return InteractionResultHolder.fail(stack);
-		}
 		player.playSound(SoundEvents.SPYGLASS_USE, 1.0F, 1.0F);
 		player.awardStat(Stats.ITEM_USED.get(this));
 		return ItemUtils.startUsingInstantly(level, player, hand);

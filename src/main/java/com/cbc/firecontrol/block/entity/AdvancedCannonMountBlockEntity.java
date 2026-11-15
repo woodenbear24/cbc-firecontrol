@@ -1146,6 +1146,22 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		return aimElevationWindow()[1];
 	}
 
+	/**
+	 * Whether {@link #aimPitchMinDeg()} / {@link #aimPitchMaxDeg()} are a reading from CBC rather than the wide
+	 * fallback below. A mount with no contraption assembled, or one whose CBC mount-properties entry is missing,
+	 * reports elevation and depression of 0, which {@link #aimElevationWindow()} answers with
+	 * {@link AimEnvelope#DEFAULT} so a solver is not told every shot is impossible. A caller that is about to
+	 * <i>limit</i> something rather than merely search inside a window has to know the difference: pinning a cue to
+	 * a fallback number would invent a stop that no gun has.
+	 */
+	public boolean aimElevationWindowKnown() {
+		if (this.mountedContraption == null)
+			return false;
+		float d = this.mountedContraption.maximumDepression();
+		float e = this.mountedContraption.maximumElevation();
+		return e + d >= 1.0f;
+	}
+
 	private double[] aimElevationWindow() {
 		if (this.mountedContraption == null)
 			return new double[] { AimEnvelope.DEFAULT.pitchMinDeg(), AimEnvelope.DEFAULT.pitchMaxDeg() };

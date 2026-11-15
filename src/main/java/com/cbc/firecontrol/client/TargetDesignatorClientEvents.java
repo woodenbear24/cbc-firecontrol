@@ -5,6 +5,7 @@ import com.cbc.firecontrol.init.CBCItems;
 import com.cbc.firecontrol.item.TargetDesignatorItem;
 import com.cbc.firecontrol.item.TargetDesignatorLinkData;
 import com.cbc.firecontrol.network.DesignatorProbePayload;
+import com.cbc.firecontrol.network.DesignatorScopePayload;
 import com.cbc.firecontrol.network.TargetDesignatorFixPayload;
 
 import com.mojang.blaze3d.platform.InputConstants;
@@ -15,6 +16,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -27,6 +29,7 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ComputeFovModifierEvent;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
@@ -37,21 +40,69 @@ import net.neoforged.neoforge.network.PacketDistributor;
  * <p>Vanilla 1.21.1's {@code GameRenderer#getFov} multiplies FOV by {@code SpyglassItem.ZOOM_FOV_MODIFIER} only
  * when the item being used IS {@code minecraft:spyglass}, so a modded copy gets the vignette and the arm pose for
  * free (via {@code ItemAbilities.SPYGLASS_SCOPE}) but not the zoom. NeoForge's {@code ComputeFovModifierEvent} is
- * the supported hook for the rest. Gated to OUR item and to the main hand being the one in use, so a vanilla
- * spyglass held at the same time is never scaled twice.
+ * the supported hook for the rest. Gated to OUR item alone: vanilla's own branch only fires for
+ * {@code minecraft:spyglass}, so the two zooms can never stack, and EITHER hand is accepted - a designator held in
+ * the off hand zooms as well, which is how a spotter sees the sight line they are pointing a console along. The
+ * zoom from there is drawn without the scope ring (see {@code CBCFCClientEvents}) and without a middle click being
+ * able to file anything (see {@link #onMouseButton}).
  */
 @EventBusSubscriber(modid = CBCFireControl.MODID, value = Dist.CLIENT)
 public class TargetDesignatorClientEvents {
 
+	/** Whether the last state we told the server about was "scoping with the off hand". */
+	private static boolean scopeAsked;
+	/** The console the current or most recent off-hand scope was asked against, so a stop can still name it. */
+	@Nullable
+	private static BlockPos scopeCalculator;
+
 	@SubscribeEvent
 	public static void onComputeFovModifier(ComputeFovModifierEvent event) {
 		Player player = event.getPlayer();
-		if (player == null || !player.isUsingItem() || player.getUsedItemHand() != net.minecraft.world.InteractionHand.MAIN_HAND)
+		if (player == null || !player.isUsingItem())
 			return;
 		ItemStack used = player.getUseItem();
 		if (!used.is(CBCItems.TARGET_DESIGNATOR.asItem()))
 			return;
 		event.setNewFovModifier(event.getNewFovModifier() * TargetDesignatorItem.ZOOM_FOV_MODIFIER);
+	}
+
+	/**
+	 * Turn the scope key into a use the server owns.
+	 *
+	 * <p>Vanilla starts a use only from the main hand, so holding a designator in the off hand gives a spotter
+	 * nothing to zoom with; this is the one route that changes that. A packet is sent only when the answer changes -
+	 * holding the key steady sends one ask, releasing it sends one stop - and the calculator named is the one the ask
+	 * was made against, so a designator that left the off hand mid-scope still has its console to stop.
+	 */
+	@SubscribeEvent
+	public static void onClientTick(ClientTickEvent.Post event) {
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.level == null || mc.player == null) {
+			scopeAsked = false;
+			scopeCalculator = null;
+			return;
+		}
+		Player player = mc.player;
+		ItemStack off = player.getOffhandItem();
+		TargetDesignatorLinkData link = off.getItem() instanceof TargetDesignatorItem
+				? TargetDesignatorItem.bindingOf(off)
+				: null;
+		boolean scopedByOffHand = player.isUsingItem()
+				&& player.getUsedItemHand() == InteractionHand.OFF_HAND
+				&& player.getUseItem().getItem() instanceof TargetDesignatorItem;
+		/*
+		 * A main-hand use outranks the key: a bow mid-draw or a main-hand scope is not interrupted by the other
+		 * hand asking to zoom, and once it has started the off-hand use is already gone on its own.
+		 */
+		boolean want = link != null && mc.screen == null && CBCFCKeyMappings.DESIGNATOR_SCOPE.isDown()
+				&& (scopedByOffHand || !player.isUsingItem());
+		if (want == scopeAsked)
+			return;
+		scopeAsked = want;
+		BlockPos calculator = want ? link.calculator() : scopeCalculator;
+		scopeCalculator = calculator;
+		if (calculator != null)
+			PacketDistributor.sendToServer(new DesignatorScopePayload(calculator, want));
 	}
 
 	/**
@@ -85,6 +136,18 @@ public class TargetDesignatorClientEvents {
 		ItemStack used = player.getUseItem();
 		if (!(used.getItem() instanceof TargetDesignatorItem))
 			return;
+		if (player.getUsedItemHand() == InteractionHand.OFF_HAND) {
+			/*
+			 * An off-hand designator is the sight line a console is following, and it zooms without a ring so that
+			 * line stays visible. Marking from there is not allowed: the order would land on a console that is
+			 * being pointed by hand, which is the same thing the console's Aim button and fire missions are shut
+			 * against for the length of the claim (and CBCFCNetwork#canDesignatorMark says the same server-side).
+			 * The click is left uncancelled, so outside the scope it still behaves as vanilla's.
+			 */
+			player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.head_aim.offhand_lock"),
+					true);
+			return;
+		}
 		TargetDesignatorLinkData link = TargetDesignatorItem.bindingOf(used);
 		if (link == null) {
 			player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.target_designator.unbound"), true);

@@ -14,6 +14,7 @@ import com.cbc.firecontrol.ballistics.AimArc;
 import com.cbc.firecontrol.ballistics.AimEnvelope;
 import com.cbc.firecontrol.ballistics.AimOutcome;
 import com.cbc.firecontrol.ballistics.AimSolution;
+import com.cbc.firecontrol.ballistics.HeadAimConvergence;
 import com.cbc.firecontrol.ballistics.InverseBallistics;
 import com.cbc.firecontrol.ballistics.LinkStatus;
 import com.cbc.firecontrol.ballistics.MaxReach;
@@ -54,10 +55,12 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import org.jetbrains.annotations.Nullable;
@@ -144,6 +147,13 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	 * line.
 	 */
 	private static final int HEAD_AIM_SOLVE_INTERVAL = 2;
+	/**
+	 * How many ticks a camera sight line stays usable for. The client sends one whenever its view moves, so a
+	 * turning spotter refreshes this every tick; the slack only has to cover a solve or two of jitter, and past it
+	 * the holder is assumed to have stopped sending, which is when reading their head is better than reading a
+	 * bearing from a frozen screen.
+	 */
+	private static final int HEAD_AIM_SIGHT_TICKS = 6;
 	/**
 	 * The spotter's sight line is quantised to this angle before it becomes a row's desired aim. A crosshair
 	 * trembles continuously, and every new desired angle replaces the solution object the drive loop measures
@@ -428,6 +438,34 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	private int headAimCueCooldown;
 	/** The next solve must be sent even if its answer is identical, because a spotter just took the console. */
 	private boolean headAimSyncPending;
+	/**
+	 * The sight line as the holder's own CAMERA sees it, plus how many ticks ago one arrived. The camera is what a
+	 * crosshair belongs to: a spotter in third person, in a vehicle, or standing on a deck that is rolling under
+	 * them is looking from somewhere other than their eye, and the server's copy of their head rotation is only as
+	 * fresh as the last movement packet. A cached line is used while it is fresh; when it stops arriving the solve
+	 * reads the head instead, so a paused or disconnected client leaves the guns following something rather than
+	 * holding the last bearing forever.
+	 */
+	@Nullable
+	private Vec3 headAimSightOrigin;
+	@Nullable
+	private Vec3 headAimSightDir;
+	/**
+	 * How far along the sight line the console is being asked to put its convergence point, in blocks, already
+	 * bounded. The sight line is a point rather than a direction: every bore is driven at this same point, so a
+	 * line of guns bears in on it and their shot paths meet there. It arrives with the camera packet because the
+	 * client is the one that can see the terrain the point is supposed to land on; when no packet is arriving the
+	 * console flies its own ray from the holder's head instead.
+	 */
+	private double headAimSightRange = HeadAimConvergence.MAX_RANGE;
+	/**
+	 * The convergence point itself, in the coordinate scale the holder's camera renders in, for the head-aim sync
+	 * to echo back. It is kept in that scale because that is the scale the spotter's screen is in, and a point
+	 * within a few hundred blocks of their camera needs no conversion at all to be drawn where they see it.
+	 */
+	@Nullable
+	private Vec3 headAimSightPoint;
+	private int headAimSightAge;
 	/** The cue each row is being driven to, quantised; NaN when the row has no cue. */
 	private final double[] cueYaw = new double[SLOTS];
 	private final double[] cuePitch = new double[SLOTS];
@@ -441,6 +479,16 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	private final double[] headAimSentMuzzle = new double[SLOTS * 3];
 	private final double[] headAimSentImpact = new double[SLOTS * 3];
 	private final byte[] headAimSentStatus = new byte[SLOTS];
+	/** The last convergence point sent, so a spotter holding steady on it does not keep receiving it. */
+	private final double[] headAimSentSight = { Double.NaN, Double.NaN, Double.NaN };
+	/**
+	 * Rows whose sight line asks for an elevation their carriage cannot give, so the cue was pinned at that stop.
+	 * Written by the head-aim pass and reported to the holder in place of the flight outcome, which is beside the
+	 * point once the row is not where it was asked to be.
+	 */
+	private final boolean[] headAimLimited = new boolean[SLOTS];
+	/** The pinned rows last announced, so the notice is not repeated on every solve that still finds them pinned. */
+	private int headAimLimitedNoticeMask;
 
 	public TrajectoryCalculatorBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
 		super(type, pos, state);
@@ -459,6 +507,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		Arrays.fill(cueYaw, Double.NaN);
 		Arrays.fill(cuePitch, Double.NaN);
 		Arrays.fill(headAimMuzzleHull, Vec3.ZERO);
+		Arrays.fill(headAimLimited, false);
 		Arrays.fill(headAimSentMuzzle, 0.0);
 		Arrays.fill(headAimSentImpact, 0.0);
 		Arrays.fill(headAimSentStatus, HeadAimSyncPayload.STATUS_NONE);
@@ -1167,6 +1216,28 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	}
 
 	/**
+	 * Record the sight line the holder's camera is looking along, as their own client reports it, together with the
+	 * point along it the console is to converge its bores on. Only the holder's lines are kept: a console follows
+	 * one sight line, and a second spotter's packet must not move the first one's guns. The direction is normalised
+	 * here rather than trusted, because it becomes a bore bearing and a zero length line would turn into a
+	 * meaningless yaw and pitch. The range is bounded here rather than trusted for the same reason: a client that
+	 * sent a point a million blocks out would be asking for bores that never bear in, and one that sent a point
+	 * three blocks out would be asking a line of guns to shoot at each other.
+	 */
+	public void updateHeadAimSight(ServerPlayer player, Vec3 origin, Vec3 dir, double range) {
+		if (headAimOwner == null || !headAimOwner.equals(player.getUUID()))
+			return;
+		if (dir.lengthSqr() < 1.0e-6)
+			return;
+		if (!isFinite(origin))
+			return;
+		headAimSightOrigin = origin;
+		headAimSightDir = dir.normalize();
+		headAimSightRange = HeadAimConvergence.clampRange(range);
+		headAimSightAge = HEAD_AIM_SIGHT_TICKS;
+	}
+
+	/**
 	 * Take the console over for head aiming. The claim belongs to whoever asks first: a console drives its bores
 	 * parallel to exactly one sight line, so a second spotter is refused rather than left fighting the first one
 	 * for the same guns. The same holder asking again - which is what a client's retry does once it has already
@@ -1192,12 +1263,19 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		for (int slot = 0; slot < SLOTS; slot++) {
 			cueYaw[slot] = Double.NaN;
 			cuePitch[slot] = Double.NaN;
+			headAimLimited[slot] = false;
 			// The rows stop being measured against whatever was solved before: each one takes its cue from here.
 			drivenSolution[slot] = null;
 		}
+		headAimLimitedNoticeMask = -1; // Impossible as a real mask, so the first solve reports what it finds.
 		Arrays.fill(headAimSentMuzzle, 0.0);
 		Arrays.fill(headAimSentImpact, 0.0);
 		Arrays.fill(headAimSentStatus, HeadAimSyncPayload.STATUS_NONE);
+		headAimSightOrigin = null;
+		headAimSightDir = null;
+		headAimSightRange = HeadAimConvergence.MAX_RANGE;
+		headAimSightPoint = null;
+		headAimSightAge = 0;
 		headAimSyncPending = true;
 		headAimCueCooldown = 0;
 		recomputeCooldown = 0;
@@ -1220,6 +1298,13 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		headAimOwner = null;
 		headAimOwnerName = "";
 		headAimSyncPending = false;
+		headAimSightOrigin = null;
+		headAimSightDir = null;
+		headAimSightRange = HeadAimConvergence.MAX_RANGE;
+		headAimSightPoint = null;
+		headAimSightAge = 0;
+		headAimLimitedNoticeMask = 0;
+		Arrays.fill(headAimLimited, false);
 		Level level = getLevel();
 		if (level != null && !level.isClientSide()) {
 			for (int slot = 0; slot < SLOTS; slot++) {
@@ -1262,15 +1347,17 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	}
 
 	/**
-	 * Keep every linked row pointed along the holder's sight line. Runs each tick, ahead of the drive loop, so the
+	 * Keep every linked row pointed at the holder's sight point. Runs each tick, ahead of the drive loop, so the
 	 * cue the loop measures the bores against is this tick's rather than last tick's.
 	 *
 	 * <p>What is written is an aim angle, not a target: {@link #driveAimChannels} already compares each mount's own
 	 * bore against the angle its row holds and transmits the difference, so driving onto a cue costs nothing beyond
-	 * reading the spotter's rotation. The angles are quantised so a crosshair's tremble does not re-write the row's
-	 * solution every tick - which would drop that row's derivative term every tick - and they are taken from the
-	 * sight line rather than from where the guns are: keeping the bores parallel to what the spotter looks at is the
-	 * whole request, and a mount slewed at a few degrees a second cannot chase a moving head in any case.
+	 * reading where the spotter's camera is pointed. The angles are quantised so a crosshair's tremble does not
+	 * re-write the row's solution every tick - which would drop that row's derivative term every tick - and they
+	 * are taken from the sight line rather than from where the guns are: pointing every bore at what the spotter
+	 * looks at is the whole request, and a mount slewed at a few degrees a second cannot chase a moving view in any
+	 * case. Each row's angle is measured to the same finite point rather than to a shared direction, so the rows
+	 * are not parallel: they converge, by however much their mounts are apart divided by the sight range.
 	 */
 	private void tickHeadAim(Level level) {
 		if (headAimCueCooldown-- > 0)
@@ -1288,33 +1375,83 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			return;
 		}
 		Vec3 look = owner.getLookAngle();
+		Vec3 origin = owner.getEyePosition(1.0F);
+		/*
+		 * Which line to follow, and how far along it the sight point sits. The holder's camera is the crosshair
+		 * they are aiming with, and it is not always the eye: third-person views put it behind them, a vehicle
+		 * turns them independently of their body, and a rolling deck moves the world under a head the server only
+		 * hears about once a movement packet arrives. A sight line that stopped arriving (a paused client, a
+		 * dropped connection) is not used, so the head takes over instead of the bores holding the bearing of a
+		 * screen that no longer exists - and the console flies its own laser for the distance, because the client
+		 * that would have measured it is the client that has gone quiet.
+		 */
+		double range;
+		if (headAimSightOrigin != null && headAimSightDir != null && headAimSightAge > 0) {
+			origin = headAimSightOrigin;
+			look = headAimSightDir;
+			range = headAimSightRange;
+			headAimSightAge--;
+		} else {
+			headAimSightAge = 0;
+			range = sightLaserRange(owner.level(), origin, look, owner);
+		}
+		range = HeadAimConvergence.clampRange(range);
+		Vec3 sightPoint = origin.add(look.scale(range));
+		headAimSightPoint = isFinite(sightPoint) ? sightPoint : null;
 		for (int slot = 0; slot < SLOTS; slot++) {
 			if (!isSlotActive(slot)) {
 				cueYaw[slot] = Double.NaN;
 				cuePitch[slot] = Double.NaN;
+				headAimLimited[slot] = false;
 				continue;
 			}
 			AdvancedCannonMountBlockEntity mount = mountForRow(level, slot);
-			if (mount == null)
+			if (mount == null) {
+				headAimLimited[slot] = false;
 				continue;
+			}
 			/*
-			 * The sight line has to be read in the frame the gun can turn in. Rather than deciding that frame
+			 * The sight point has to be read in the frame the gun can turn in. Rather than deciding that frame
 			 * here, the spotter's aim point is handed to the same bridge the console already uses for a typed or
 			 * locked target (com.cbc.firecontrol.compat.SableShipCoordinates#resolveTarget), which carries a world
 			 * point into the ship's own coordinates only when the two really are in different scales and says so
 			 * when it cannot. The direction from the mount's bore origin to that point is then a bearing the deck
-			 * can follow: when gun and spotter share a frame the point is returned untouched, and the difference
-			 * is the spotter's look direction exactly.
+			 * can follow: when gun and spotter share a frame the point is returned untouched. It is a point rather
+			 * than a direction on purpose - every row is driven at the same one, so a line of guns bears inward on
+			 * it and their shots meet there, which is the whole content of a finite convergence distance.
 			 */
 			Vec3 anchor = mount.currentBoreOrigin();
-			Vec3 farPoint = SableShipCoordinates.resolveTarget(mount.getLevel(), mount, anchor,
-					owner.getEyePosition(1.0F).add(look.scale(1000.0)));
-			Vec3 cue = farPoint.subtract(anchor);
-			if (cue.lengthSqr() < 1.0e-9)
+			Vec3 aimPoint = SableShipCoordinates.resolveTarget(mount.getLevel(), mount, anchor, sightPoint);
+			Vec3 cue = aimPoint.subtract(anchor);
+			if (cue.lengthSqr() < 1.0e-9) {
+				headAimLimited[slot] = false;
 				continue;
+			}
 			cue = cue.normalize();
 			double yaw = quantizeCue(InverseBallistics.yawOf(cue));
 			double pitch = quantizeCue(InverseBallistics.pitchOf(cue));
+			/*
+			 * Where the sight line asks for an elevation this carriage cannot give, the cue stops at the carriage
+			 * instead of asking for the impossible - the part of a WT turret that has an aim it cannot reach. The
+			 * bore keeps traversing to the sight line's azimuth and parks on its elevation stop, which is what a
+			 * gun bolted to that carriage can actually do. Leaving it unpinned is not merely an unmet request:
+			 * consoleAdjustPitch clamps the carriage's pitch to its own limit, so the error never closes and
+			 * driveAimChannels winds its integral against a demand that will never be satisfied, holding every
+			 * level the console is allowed to send forever. The window is the same reading aimEnvelopeFor takes for
+			 * a solved aim, in the same world-elevation convention (on a heeling deck that is as approximate here
+			 * as it already is there), and it is only trusted when CBC reported real numbers - an unassembled
+			 * mount answers the wide fallback, and pinning a cue to a fallback number invents a stop no gun has.
+			 */
+			boolean pinned = false;
+			if (mount.aimElevationWindowKnown()) {
+				double reachable = HeadAimConvergence.clampPitch(pitch, mount.aimPitchMinDeg(),
+						mount.aimPitchMaxDeg());
+				if (reachable != pitch) {
+					pitch = quantizeCue(reachable);
+					pinned = true;
+				}
+			}
+			headAimLimited[slot] = pinned;
 			aimArmed[slot] = true;
 			if (cueYaw[slot] == yaw && cuePitch[slot] == pitch)
 				continue; // Same quantised angle: keep the row's existing solution and its rate history.
@@ -1323,6 +1460,37 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			aims[slot] = cueSolution(yaw, pitch);
 			aimStateChanged = true;
 		}
+		/*
+		 * Say which rows have stopped, once rather than every solve: sweeping a crosshair across a low carriage's
+		 * ceiling would otherwise repeat the same notice twice a second. Rows are named from one, matching what the
+		 * console's readouts call them, so the number lines up with the marker that changed colour.
+		 */
+		int pinnedMask = 0;
+		for (int slot = 0; slot < SLOTS; slot++)
+			if (headAimLimited[slot])
+				pinnedMask |= 1 << slot;
+		if (pinnedMask != headAimLimitedNoticeMask) {
+			headAimLimitedNoticeMask = pinnedMask;
+			owner.displayClientMessage(Component.translatable(
+					pinnedMask == 0 ? "cbc_firecontrol.calculator.head_aim.limited_clear"
+							: "cbc_firecontrol.calculator.head_aim.limited", limitedRowList(pinnedMask)), true);
+		}
+	}
+
+	/**
+	 * Where a sight line lands when the client that owns it has stopped reporting one: the console flies the ray
+	 * itself against the terrain the holder stands on and takes that distance, or the far bound when the ray
+	 * reaches nothing at all. OUTLINE rather than COLLIDER, because the point a crosshair sits on is where the
+	 * player sees terrain, not where a collision box begins - a glass pane or a fence is what they are aiming at.
+	 * The holder is passed as the clip's owner so the ray does not clip the player aiming it.
+	 */
+	private static double sightLaserRange(Level level, Vec3 origin, Vec3 dir, ServerPlayer owner) {
+		Vec3 end = origin.add(dir.scale(HeadAimConvergence.MAX_RANGE));
+		BlockHitResult hit = level.clip(new ClipContext(origin, end, ClipContext.Block.OUTLINE,
+				ClipContext.Fluid.NONE, owner));
+		if (hit.getType() != BlockHitResult.Type.BLOCK)
+			return HeadAimConvergence.MAX_RANGE;
+		return HeadAimConvergence.clampRange(origin.distanceTo(hit.getLocation()));
 	}
 
 	/** The player this console is head-aiming for, or null when they are not in the world to be read. */
@@ -1332,7 +1500,6 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			return null;
 		return level.getServer().getPlayerList().getPlayer(headAimOwner);
 	}
-
 	/**
 	 * Report where each row's next shot would land while it follows the sight line, read out of the forward
 	 * predictions the readout loop just flew - a head-aim answer therefore costs no flight of its own - and send
@@ -1357,6 +1524,14 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 				case OK, LIFETIME_END, OUT_OF_WORLD -> HeadAimSyncPayload.STATUS_STALL;
 				default -> HeadAimSyncPayload.STATUS_NONE;
 			};
+			/*
+			 * A row pinned at its elevation stop reports that in place of what its flight reached: the shot shown is
+			 * one the carriage's limit chose, not one the spotter asked for, and which blocks it happened to touch
+			 * on the way is not the news. A row with no gun at all still reports NONE - nothing is pinned about a
+			 * gun that does not exist, and drawing it would promise a marker for a row that cannot fire.
+			 */
+			if (status[slot] != HeadAimSyncPayload.STATUS_NONE && headAimLimited[slot])
+				status[slot] = HeadAimSyncPayload.STATUS_LIMITED;
 			// A row with nothing shootable has no flight behind its answer, so it is not drawn and not converted.
 			AdvancedCannonMountBlockEntity mount = status[slot] == HeadAimSyncPayload.STATUS_NONE ? null
 					: mountForRow(level, slot);
@@ -1382,14 +1557,31 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 					|| impact[slot * 3 + 2] != headAimSentImpact[slot * 3 + 2])
 				changed = true;
 		}
+		/*
+		 * The convergence point moves with the camera even when no row's prediction moved, so it is compared on
+		 * its own: a spotter sweeping their view across a stationary target line still has to see the laser sweep
+		 * with it. Both sides of a missing point are NaN, and NaN does not compare equal to itself, so the
+		 * comparison says "both absent" explicitly instead of re-sending an absent point every tick.
+		 */
+		Vec3 sight = headAimSightPoint;
+		double sightX = sight == null ? Double.NaN : sight.x;
+		double sightY = sight == null ? Double.NaN : sight.y;
+		double sightZ = sight == null ? Double.NaN : sight.z;
+		if (!sameCoordinate(sightX, headAimSentSight[0]) || !sameCoordinate(sightY, headAimSentSight[1])
+				|| !sameCoordinate(sightZ, headAimSentSight[2]))
+			changed = true;
 		if (!changed)
 			return;
 		System.arraycopy(muzzle, 0, headAimSentMuzzle, 0, SLOTS * 3);
 		System.arraycopy(impact, 0, headAimSentImpact, 0, SLOTS * 3);
 		System.arraycopy(status, 0, headAimSentStatus, 0, SLOTS);
+		headAimSentSight[0] = sightX;
+		headAimSentSight[1] = sightY;
+		headAimSentSight[2] = sightZ;
 		headAimSyncPending = false;
 		PacketDistributor.sendToPlayer(owner,
-				new HeadAimSyncPayload(worldPosition, owner.getUUID(), SLOTS, muzzle, impact, status));
+				new HeadAimSyncPayload(worldPosition, owner.getUUID(), SLOTS, muzzle, impact, status,
+						sightX, sightY, sightZ));
 	}
 
 	/** Whether the designator bound to THIS console is the one sitting in this player's off hand. */
@@ -1416,6 +1608,22 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	}
 
 	/**
+	 * The rows pinned at an elevation stop, named from one as "1, 3", which is how the console's own readouts label
+	 * them - a spotter told "row 2" can find the marker that went red without counting from zero.
+	 */
+	private static String limitedRowList(int mask) {
+		StringBuilder list = new StringBuilder();
+		for (int slot = 0; slot < SLOTS; slot++) {
+			if ((mask & (1 << slot)) == 0)
+				continue;
+			if (list.length() > 0)
+				list.append(", ");
+			list.append(slot + 1);
+		}
+		return list.toString();
+	}
+
+	/**
 	 * A cue aim for the drive loop to measure against. It carries no miss figures, because there was no target to
 	 * miss: the console is pointing the bore, not solving for a point, and what the shot actually reaches is the
 	 * impact the head-aim sync reports alongside it.
@@ -1427,6 +1635,11 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 
 	private static boolean isFinite(Vec3 v) {
 		return Double.isFinite(v.x) && Double.isFinite(v.y) && Double.isFinite(v.z);
+	}
+
+	/** Two coordinates of a sent readout, counted equal when both are missing rather than when both are NaN. */
+	private static boolean sameCoordinate(double sent, double remembered) {
+		return Double.isNaN(sent) ? Double.isNaN(remembered) : sent == remembered;
 	}
 
 	@Override

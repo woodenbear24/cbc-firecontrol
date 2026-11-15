@@ -18,10 +18,12 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
@@ -208,6 +210,11 @@ public class CBCFCNetwork {
 						true);
 				return;
 			}
+			if (!canDesignatorMark(player, calculator)) {
+				player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.head_aim.offhand_lock"),
+						true);
+				return;
+			}
 
 			/*
 			 * The order is a fire mission rather than a one-off aim: it goes into the console's queue and into
@@ -242,6 +249,11 @@ public class CBCFCNetwork {
 			}
 			if (heldBoundDesignator(player, pos).isEmpty()) {
 				player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.target_designator.not_bound"),
+						true);
+				return;
+			}
+			if (!canDesignatorMark(player, calculator)) {
+				player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.head_aim.offhand_lock"),
 						true);
 				return;
 			}
@@ -283,11 +295,65 @@ public class CBCFCNetwork {
 	}
 
 	/**
+	 * The holder of a head-aim claim reporting where their own camera is pointed - the line the console is to keep
+	 * its bores parallel to. Nothing is verified here beyond finding the console the packet names: the console itself
+	 * refuses a sight line from anybody who is not its holder, because one console follows exactly one spotter. A
+	 * console that went away is simply not there to move, so no answer is sent back for that.
+	 */
+	public static void handleHeadAimSight(HeadAimSightPayload payload, IPayloadContext context) {
+		context.enqueueWork(() -> {
+			if (!(context.player() instanceof ServerPlayer player))
+				return;
+			if (!(player.level().getBlockEntity(payload.calculator())
+					 instanceof TrajectoryCalculatorBlockEntity calculator))
+				return;
+			calculator.updateHeadAimSight(player,
+					new Vec3(payload.originX(), payload.originY(), payload.originZ()),
+					new Vec3(payload.dirX(), payload.dirY(), payload.dirZ()), payload.range());
+		});
+	}
+
+	/**
 	 * The console's answer to a head-aim claim: where each of its guns would put its next shot. Held on the client
 	 * only long enough to draw it, and only for the player the console named as its holder.
 	 */
 	public static void handleHeadAimSync(HeadAimSyncPayload payload, IPayloadContext context) {
 		context.enqueueWork(() -> HeadAimClientEvents.applySync(payload));
+	}
+
+	/**
+	 * A spotter asking to scope with the designator in their OFF hand, or to stop. The server owns the use state, and
+	 * vanilla only ever starts one from the main hand, so this is the only route by which an off-hand designator can
+	 * zoom: the key is {@code key.cbc_firecontrol.designator_scope}.
+	 *
+	 * <p>Verified the way a claim is: the OFF hand really holds a designator bound to the console the packet names,
+	 * and the main hand is not already using something (a bow mid-draw, a placed block, a main-hand scope - none of
+	 * those may be interrupted by another hand's zoom). A stop is applied only to a use that is actually the off
+	 * hand's, so releasing the key never cancels a main-hand action.
+	 */
+	public static void handleDesignatorScope(DesignatorScopePayload payload, IPayloadContext context) {
+		context.enqueueWork(() -> {
+			if (!(context.player() instanceof ServerPlayer player))
+				return;
+			if (!(player.level().getBlockEntity(payload.calculator())
+				 instanceof TrajectoryCalculatorBlockEntity calculator))
+				return;
+			if (!offHandBoundDesignator(player, calculator))
+				return;
+			if (payload.start()) {
+				if (player.isUsingItem())
+					return; // Whatever the main hand is doing outranks a zoom asked for by the other one.
+				// LivingEntity#startUsingItem re-reads the stack and refuses one that is not usable, so the
+				// off-hand check above is the whole verification this needs.
+				player.startUsingItem(InteractionHand.OFF_HAND);
+				// The main hand's scope hears its own click inside use(); this path has no use() to lean on, and
+				// ServerPlayer#playSound reaches only the player who asked.
+				player.playSound(SoundEvents.SPYGLASS_USE, 1.0F, 1.0F);
+				return;
+			}
+			if (player.isUsingItem() && player.getUsedItemHand() == InteractionHand.OFF_HAND)
+				player.releaseUsingItem();
+		});
 	}
 
 	/** The designator in either hand that is bound to this console, or EMPTY when the player holds none. */
@@ -320,6 +386,20 @@ public class CBCFCNetwork {
 		UUID id = data.calculatorIdOrNull();
 		return data.calculator().equals(calculator.getBlockPos())
 				|| (calculator.calculatorId() != null && id != null && calculator.calculatorId().equals(id));
+	}
+
+	/**
+	 * Whether this player may file a target with a designator right now. Marking is the scope's own action, so the
+	 * scope has to be raised (the packet's sender is using an item) and it has to be raised in the MAIN hand: a
+	 * bound designator sitting in the off hand is a sight line the console is already following, and a target filed
+	 * from there would be an order handed to a console that is being pointed by hand - the same thing the console
+	 * shuts its Aim button and its fire missions against for the length of a head-aim claim. An off-hand designator
+	 * still zooms, because seeing further is how a spotter aims; it just cannot order anything.
+	 */
+	private static boolean canDesignatorMark(ServerPlayer player, TrajectoryCalculatorBlockEntity calculator) {
+		return player.isUsingItem()
+				&& player.getUsedItemHand() == InteractionHand.MAIN_HAND
+				&& !offHandBoundDesignator(player, calculator);
 	}
 
 	public static void handleStateClient(MountStatePayload payload, IPayloadContext context) {

@@ -17,8 +17,10 @@ import com.cbc.firecontrol.network.CalculatorSettingsPayload;
 import com.cbc.firecontrol.network.CalculatorTargetPayload;
 import com.cbc.firecontrol.network.CalculatorTabPayload;
 import com.cbc.firecontrol.network.DesignatorProbePayload;
+import com.cbc.firecontrol.network.DesignatorScopePayload;
 import com.cbc.firecontrol.network.MountControlPayload;
 import com.cbc.firecontrol.network.HeadAimRequestPayload;
+import com.cbc.firecontrol.network.HeadAimSightPayload;
 import com.cbc.firecontrol.network.HeadAimSyncPayload;
 import com.cbc.firecontrol.network.MountStatePayload;
 import com.cbc.firecontrol.network.TargetDesignatorFixPayload;
@@ -160,6 +162,10 @@ public class CBCFireControl {
 				CBCFCNetwork::handleDesignatorProbe);
 		registrar.playToServer(HeadAimRequestPayload.TYPE, HeadAimRequestPayload.STREAM_CODEC,
 				CBCFCNetwork::handleHeadAimRequest);
+		registrar.playToServer(HeadAimSightPayload.TYPE, HeadAimSightPayload.STREAM_CODEC,
+				CBCFCNetwork::handleHeadAimSight);
+		registrar.playToServer(DesignatorScopePayload.TYPE, DesignatorScopePayload.STREAM_CODEC,
+				CBCFCNetwork::handleDesignatorScope);
 		registrar.playToClient(HeadAimSyncPayload.TYPE, HeadAimSyncPayload.STREAM_CODEC,
 				CBCFCNetwork::handleHeadAimSync);
 		registrar.playToClient(MountStatePayload.TYPE, MountStatePayload.STREAM_CODEC, CBCFCNetwork::handleStateClient);
