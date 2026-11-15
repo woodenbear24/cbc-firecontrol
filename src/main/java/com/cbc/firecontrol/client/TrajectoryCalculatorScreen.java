@@ -4,9 +4,9 @@ import java.util.List;
 
 import com.cbc.firecontrol.block.entity.TrajectoryCalculatorBlockEntity;
 import com.cbc.firecontrol.client.calculator.CalculatorChannelTab;
+import com.cbc.firecontrol.client.calculator.CalculatorConfigTab;
 import com.cbc.firecontrol.client.calculator.CalculatorLinkTab;
 import com.cbc.firecontrol.client.calculator.CalculatorStatusTab;
-import com.cbc.firecontrol.client.calculator.CalculatorTargetTab;
 import com.cbc.firecontrol.client.calculator.CalculatorTaskTab;
 import com.cbc.firecontrol.client.gui.ConsoleTheme;
 import com.cbc.firecontrol.client.gui.GuiTab;
@@ -25,8 +25,9 @@ import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
  * Create-style console of the Trajectory Calculator, split into pages (see {@link TabbedSimiContainerScreen}):
- * the link cards and their readouts, the target entry with the mission wait window under it, the channel grid, a
- * status page that quotes the same numbers without the grid crowding them, and the fire-mission board.
+ * the link cards and their readouts, the config page (the target entry with the console's two settings under it),
+ * the channel grid, a status page that quotes the same numbers without the grid crowding them, and the
+ * fire-mission board.
  *
  * <p>Drawn procedurally with {@link GuiGraphics#fill} instead of a bespoke panel texture: the readout column is
  * wide (mount coordinates, status, impact point, speed, flight time) and text-driven, so a flat dark panel with
@@ -44,7 +45,7 @@ import net.neoforged.neoforge.network.PacketDistributor;
 public class TrajectoryCalculatorScreen extends TabbedSimiContainerScreen<TrajectoryCalculatorMenu> {
 
 	public TrajectoryCalculatorScreen(TrajectoryCalculatorMenu menu, Inventory inventory, Component title) {
-		super(menu, inventory, title, List.<GuiTab>of(new CalculatorLinkTab(), new CalculatorTargetTab(),
+		super(menu, inventory, title, List.<GuiTab>of(new CalculatorLinkTab(), new CalculatorConfigTab(),
 				new CalculatorChannelTab(), new CalculatorStatusTab(), new CalculatorTaskTab()));
 	}
 

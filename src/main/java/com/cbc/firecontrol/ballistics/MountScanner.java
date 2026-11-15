@@ -97,6 +97,16 @@ public final class MountScanner {
 		Vec3 muzzle = muzzleRaw.subtract(direction.scale(2));
 
 		/*
+		 * Both of those come back in the scale of the level the contraption lives in, which is what the mount's
+		 * own yaw/pitch are measured in: on a Sable ship that is the ship's sub-level, so the muzzle reads as a
+		 * few hundred blocks and the bore direction is relative to the hull. Deliberately NOT transformed into
+		 * world space - a world-space muzzle would make the solved angles absolute bearings, which the mount
+		 * cannot follow (it only turns relative to the ship it sits on), and it would put the muzzle in a
+		 * dimension the terrain check does not read. The target is brought INTO this scale instead, by
+		 * com.cbc.firecontrol.compat.SableShipCoordinates.
+		 */
+
+		/*
 		 * Everything below is read in BORE ORDER, from the breech side toward the muzzle, because CBC's
 		 * fireShot walks the bore exactly that way and three of its rules depend on the order: an empty cell
 		 * before the round costs one charge point, the first propellant decides whether the load ignites at

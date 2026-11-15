@@ -130,6 +130,11 @@ public class MountFrequencyScreen extends AbstractSimiContainerScreen<MountFrequ
 		renderPlayerInventory(graphics, invX, invY);
 	}
 
+	/**
+	 * Hover hint for the assemble toggle. The panel skin gives that button no label of its own, and
+	 * "which of these three icons assembles the cannon?" is precisely what makes the mount look like it
+	 * cannot be assembled at all, so the button says what it does once the cursor is on it.
+	 */
 	@Override
 	protected void renderForeground(GuiGraphics graphics, int mouseX, int mouseY, float partialTicks) {
 		int bandTop = topPos + 15;
@@ -144,6 +149,15 @@ public class MountFrequencyScreen extends AbstractSimiContainerScreen<MountFrequ
 				String fire = ACTION_NAMES[i];
 				graphics.drawString(this.font, fire, slotX + 9 - this.font.width(fire) / 2, bandTop + 6, 0xE0E0E0, false);
 			}
+		}
+
+		int bx = leftPos + BTN_LOAD_X;
+		int by = topPos + BTN_Y;
+		if (mouseX >= bx && mouseX < bx + 18 && mouseY >= by && mouseY < by + 18) {
+			graphics.renderTooltip(this.font,
+					Component.literal(!gotState ? "Assemble / Disassemble cannon"
+							: (running ? "Disassemble cannon" : "Assemble cannon")),
+					mouseX, mouseY);
 		}
 	}
 }

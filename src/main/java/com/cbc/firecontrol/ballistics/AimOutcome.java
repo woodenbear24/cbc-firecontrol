@@ -47,7 +47,16 @@ public enum AimOutcome {
 	 * assembled to its expected length, or a load the breech charge cannot ignite. See {@link RoundState},
 	 * which names which of the three it is.
 	 */
-	NO_ROUND(false);
+	NO_ROUND(false),
+	/**
+	 * Not a solved aim at all: the row drives onto the spotter's live sight line (head aiming), so the bore is
+	 * kept parallel to what they are looking at and no target coordinate was ever computed. It counts as a
+	 * solution because the row is genuinely being driven, but the miss figures do not apply to it - what a
+	 * head-aimed gun actually hits is the predicted impact the console paints on the spotter's screen, not this
+	 * aim. Appended last so the ordinals the {@code Aims} tag has been storing since the console existed keep
+	 * decoding to the verdict they were written for.
+	 */
+	CUE(true);
 
 	/** Ordinal-indexed table so a stored/sent index decodes back safely instead of throwing. */
 	public static final AimOutcome[] BY_INDEX = values();

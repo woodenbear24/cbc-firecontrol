@@ -1,20 +1,27 @@
 package com.cbc.firecontrol.network;
 
+import com.cbc.firecontrol.CBCFireControl;
 import com.cbc.firecontrol.block.entity.AdvancedCannonMountBlockEntity;
 import com.cbc.firecontrol.block.entity.TrajectoryCalculatorBlockEntity;
+import com.cbc.firecontrol.client.HeadAimClientEvents;
 import com.cbc.firecontrol.client.MountFrequencyScreen;
 import com.cbc.firecontrol.item.TargetDesignatorItem;
 import com.cbc.firecontrol.item.TargetDesignatorLinkData;
+import com.cbc.firecontrol.menu.MountFrequencyMenu;
 import com.cbc.firecontrol.menu.TrajectoryCalculatorMenu;
 import com.cbc.firecontrol.network.CalculatorAimPayload;
 import com.cbc.firecontrol.network.CalculatorTargetPayload;
 import java.util.List;
+import java.util.UUID;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
@@ -25,15 +32,49 @@ public class CBCFCNetwork {
 		context.enqueueWork(() -> {
 			if (!(context.player() instanceof ServerPlayer player))
 				return;
-			var level = player.serverLevel();
 			BlockPos pos = payload.pos();
-			double dx = pos.getX() + 0.5 - player.getX();
-			double dy = pos.getY() + 0.5 - player.getY();
-			double dz = pos.getZ() + 0.5 - player.getZ();
-			if (dx * dx + dy * dy + dz * dz > 64.0 * 64.0)
+			/*
+			 * No geometric reach check here: a Sable ship reports the player in the sub-level's local scale and
+			 * the mount at the ship's footprint scale (verified case: player at 122,-58,75, mount at
+			 * 20481032,128,20483080 in minecraft:overworld), and CBC's transformBlockPos does not bridge those
+			 * two, so any distance arithmetic either rejects legitimate ship users or accepts nonsense. The
+			 * equivalent guarantee is the session: this payload only ever comes from the frequency panel of
+			 * exactly this mount, so require that panel to be open for this position.
+			 */
+			if (payload.action() != MountAction.REQUEST) {
+				if (!(player.containerMenu instanceof MountFrequencyMenu menu) || !pos.equals(menu.mountPos())) {
+					CBCFireControl.LOGGER.warn("[cbc_firecontrol] mount {} action {} ignored: {} has no frequency panel"
+									+ " open for that position (open panel: {})",
+							pos.toShortString(), payload.action(), player.getGameProfile().getName(),
+							player.containerMenu instanceof MountFrequencyMenu other ? other.mountPos().toShortString()
+									: "none");
+					return;
+				}
+			}
+
+			ServerLevel playerLevel = player.serverLevel();
+			BlockEntity found = playerLevel.getBlockEntity(pos);
+			Level resolved = playerLevel;
+			if (!(found instanceof AdvancedCannonMountBlockEntity)) {
+				// The panel position may be the ship's footprint coordinate while the player entity lives in the
+				// sub-level instance (or the other way round), so also look in the ship's world dimension.
+				ServerLevel world = player.server.overworld();
+				if (world != playerLevel) {
+					BlockEntity inWorld = world.getBlockEntity(pos);
+					if (inWorld instanceof AdvancedCannonMountBlockEntity) {
+						found = inWorld;
+						resolved = world;
+					}
+				}
+			}
+			if (!(found instanceof AdvancedCannonMountBlockEntity mount)) {
+				CBCFireControl.LOGGER.warn("[cbc_firecontrol] mount {} action {} ignored: no advanced cannon mount"
+								+ " at that position (player level {}, searched {} and {}, found: {})",
+						pos.toShortString(), payload.action(), playerLevel.getClass().getSimpleName(),
+						playerLevel.dimension().location(), resolved.dimension().location(),
+						found == null ? "no block entity" : found.getClass().getSimpleName());
 				return;
-			if (!(level.getBlockEntity(pos) instanceof AdvancedCannonMountBlockEntity mount))
-				return;
+			}
 
 			switch (payload.action()) {
 			case ASSEMBLE -> mount.consoleAssemble();
@@ -120,9 +161,10 @@ public class CBCFCNetwork {
 	}
 
 	/**
-	 * The target page's wait window: how long a mount may hold an order it cannot take. Authority is the block
-	 * itself, the same rule the target entry and the aim order use; the block entity clamps the value, so a
-	 * modified client cannot open an arbitrarily long window.
+	 * The config page's two settings: the wait window a mount may hold an order it cannot take, and the highest
+	 * redstone level the console may transmit. Authority is the block itself, the same rule the target entry and
+	 * the aim order use; the block entity clamps both, so a modified client can neither open an arbitrarily long
+	 * window nor drive a mount radio harder than the console's bounds allow.
 	 */
 	public static void handleCalculatorSettings(CalculatorSettingsPayload payload, IPayloadContext context) {
 		context.enqueueWork(() -> {
@@ -134,6 +176,7 @@ public class CBCFCNetwork {
 			if (!calculator.canPlayerUse(player))
 				return;
 			calculator.setMissionWaitSeconds(payload.missionWaitSeconds());
+			calculator.setMaxLinkLevel(payload.maxLinkLevel());
 		});
 	}
 
@@ -170,7 +213,7 @@ public class CBCFCNetwork {
 			 * The order is a fire mission rather than a one-off aim: it goes into the console's queue and into
 			 * every active mount's own queue, where each mount takes it when it can, turns onto it and fires it
 			 * over its wireless fire channel. A mount that cannot take it waits it out for the window configured
-			 * on the console's target page, and drops it from its own queue when that expires; an order the
+			 * on the console's config page, and drops it from its own queue when that expires; an order the
 			 * mount cannot solve at all is dropped at once. The spotter's answer is the one actionbar line
 			 * {@link TrajectoryCalculatorBlockEntity#applyDesignatorLock} puts up, naming the block and how many
 			 * queues took the order - the same answer a terrain walk gives when it finds something, so both
@@ -207,6 +250,46 @@ public class CBCFCNetwork {
 		});
 	}
 
+	/**
+	 * A player putting a bound designator in their off hand asks to head-aim; taking it out says so. The claim is
+	 * verified exactly as a lock is - a designator bound to the console the packet names - and it is verified in the
+	 * OFF hand only: the main hand stays free to hold a scope, a tool, or a second designator working for another
+	 * gun line, and the console refuses a claim from anyone whose off hand is not holding the bound item.
+	 *
+	 * <p>Whom the console belongs to is answered by the console itself, because a console follows exactly one sight
+	 * line: the first spotter to offer one holds it, and anybody else asking is refused with that name.
+	 */
+	public static void handleHeadAimRequest(HeadAimRequestPayload payload, IPayloadContext context) {
+		context.enqueueWork(() -> {
+			if (!(context.player() instanceof ServerPlayer player))
+				return;
+			BlockPos pos = payload.calculator();
+			if (!(player.level().getBlockEntity(pos) instanceof TrajectoryCalculatorBlockEntity calculator)) {
+				player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.target_designator.console_gone"),
+						true);
+				return;
+			}
+			if (!payload.engage()) {
+				calculator.releaseHeadAim(player, "cbc_firecontrol.calculator.head_aim.released");
+				return;
+			}
+			if (!offHandBoundDesignator(player, calculator)) {
+				player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.head_aim.needs_offhand"),
+						true);
+				return;
+			}
+			calculator.claimHeadAim(player);
+		});
+	}
+
+	/**
+	 * The console's answer to a head-aim claim: where each of its guns would put its next shot. Held on the client
+	 * only long enough to draw it, and only for the player the console named as its holder.
+	 */
+	public static void handleHeadAimSync(HeadAimSyncPayload payload, IPayloadContext context) {
+		context.enqueueWork(() -> HeadAimClientEvents.applySync(payload));
+	}
+
 	/** The designator in either hand that is bound to this console, or EMPTY when the player holds none. */
 	private static ItemStack heldBoundDesignator(ServerPlayer player, BlockPos calculator) {
 		for (InteractionHand hand : List.of(InteractionHand.MAIN_HAND, InteractionHand.OFF_HAND)) {
@@ -218,6 +301,25 @@ public class CBCFCNetwork {
 				return stack;
 		}
 		return ItemStack.EMPTY;
+	}
+
+	/**
+	 * Whether the designator sitting in this player's OFF hand is bound to this console. Coordinates decide normally,
+	 * and a matching console id also counts: a console picked up and placed elsewhere is still the console the
+	 * designator was bound to, and a card whose stored coordinates went stale must not be read as somebody else's
+	 * console. The main hand is deliberately not considered - it stays free for a scope or a tool while the off
+	 * hand holds the sight line.
+	 */
+	private static boolean offHandBoundDesignator(ServerPlayer player, TrajectoryCalculatorBlockEntity calculator) {
+		ItemStack stack = player.getOffhandItem();
+		if (!(stack.getItem() instanceof TargetDesignatorItem))
+			return false;
+		TargetDesignatorLinkData data = TargetDesignatorItem.bindingOf(stack);
+		if (data == null)
+			return false;
+		UUID id = data.calculatorIdOrNull();
+		return data.calculator().equals(calculator.getBlockPos())
+				|| (calculator.calculatorId() != null && id != null && calculator.calculatorId().equals(id));
 	}
 
 	public static void handleStateClient(MountStatePayload payload, IPayloadContext context) {

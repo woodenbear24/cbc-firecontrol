@@ -120,6 +120,8 @@ public final class CalculatorTooltips {
 		case HIT -> ConsoleTheme.COLOR_OK;
 		case RESIDUAL -> ConsoleTheme.COLOR_HIT;
 		case BLOCKED, ELEVATION_LIMITED, CHARGE_INSUFFICIENT -> ConsoleTheme.COLOR_STALLED;
+		/* A head-aimed row is driven, not solved: it reads like a live aim rather than a verdict. */
+		case CUE -> ConsoleTheme.COLOR_OK;
 		default -> ConsoleTheme.COLOR_ERROR;
 		};
 	}
@@ -189,6 +191,13 @@ public final class CalculatorTooltips {
 		}
 		lines.add(Component.translatable("cbc_firecontrol.calculator.aimdetail.outcome",
 				Component.translatable(aim.outcome().langKey())));
+		/*
+		 * A head-aim cue is an angle, not a solve: it carries no arc, no miss figures and no flight, because there
+		 * was no target to be reached. Saying so here keeps the tooltip from printing a row of zeroes for it; the
+		 * real flight of that row is the prediction listed underneath.
+		 */
+		if (aim.outcome() == AimOutcome.CUE)
+			lines.add(Component.translatable("cbc_firecontrol.aim.cue"));
 		lines.add(Component.translatable("cbc_firecontrol.calculator.aimdetail.aim",
 				String.format("%.2f", aim.yawDeg()), String.format("%.2f", aim.pitchDeg()),
 				Component.translatable(aim.arcLangKey())));

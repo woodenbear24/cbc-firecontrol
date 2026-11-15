@@ -193,30 +193,99 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		return direction.lengthSqr() < 1.0e-6 ? null : direction.normalize();
 	}
 
+	/**
+	 * The point {@link #currentBoreDirection()} is measured from, in the same coordinate space that direction
+	 * lives in: the ship's sub-level for a mount bolted to a deck, the world for a land gun. Converting a look
+	 * direction between two frames needs a reference point in the frame being converted TO (a rigid transform is
+	 * rotation plus translation, so the direction is the difference of two transformed points), and a head-aiming
+	 * spotter's sight line arrives in the frame their own entity stands in. The mount's own cell centre is the
+	 * fallback for a mount whose contraption is not out yet, which is a mount nothing can be aimed at anyway.
+	 */
+	public Vec3 currentBoreOrigin() {
+		PitchOrientedContraptionEntity entity = mountedEntityOrNull();
+		return entity == null ? getBlockPos().getCenter()
+				: entity.toGlobalVector(Vec3.atCenterOf(BlockPos.ZERO), 0.0f);
+	}
+
+	/**
+	 * How many cells toward the bore the cannon body actually occupies its first block at: 1 = flush against
+	 * this half-slab mount, 2 = CBC's classic one-air-gap layout. {@link #assemble()} picks whichever holds a
+	 * cannon, and {@link #resetContraptionToOffset()} must place the entity at the very same depth, or the
+	 * bore lands a cell away from the blocks the scan consumed.
+	 */
+	private int assemblyDepth = 1;
+
+	/**
+	 * Why the last assemble attempt refused. CBC keeps its own {@code lastException} private, so this mount
+	 * owns the failure that the goggle / value-box display hook reports through
+	 * {@link #getLastAssemblyException()}; exceptions thrown by CBC's own body scan are stored verbatim.
+	 */
+	private AssemblyException fcAssembleFailure;
+
+	@Override
+	public AssemblyException getLastAssemblyException() {
+		return this.fcAssembleFailure != null ? this.fcAssembleFailure : super.getLastAssemblyException();
+	}
+
+	/**
+	 * Server-side reason for a refused assembly. Stock CBC returns silently from every bail-out in
+	 * {@code CannonMountBlockEntity.assemble()}, which is why "the Assemble button did nothing" looks like a
+	 * broken mount instead of the wrong build; each refusal gets a line here.
+	 */
+	private void logAssembleFail(String reason) {
+		Level level = this.getLevel();
+		if (level == null || level.isClientSide())
+			return;
+		CBCFireControl.LOGGER.info("[cbc_firecontrol] assemble refused at {}: {}", this.worldPosition.toShortString(), reason);
+	}
+
 	@Override
 	protected void assemble() throws AssemblyException {
 		// CBC's own assemble() is gated on CBCBlocks.CANNON_MOUNT.has(state); ours is gated on our block.
 		if (!CBCFCBlocks.ADVANCED_CANNON_MOUNT.has(this.getBlockState())) return;
 
 		Direction vertical = this.getBlockState().getValue(BlockStateProperties.VERTICAL_DIRECTION);
-		// Half-slab layout: assemblyPos = 1 grid in cannon direction (was 2 in CBC's full-block mount).
-		//   - vertical=DOWN (upright mount, cannon above): assemblyPos = mount.above(1) = mountPos+1 (adjacent cell)
-		//   - vertical=UP   (inverted mount, cannon below): assemblyPos = mount.below(1) = mountPos-1 (adjacent cell)
-		BlockPos assemblyPos = this.worldPosition.relative(vertical, -1);
-		if (this.getLevel().isOutsideBuildHeight(assemblyPos)) {
-			throw cannonBlockOutsideOfWorld(assemblyPos);
+		/*
+		 * Two bore layouts are accepted, and whichever one actually holds a cannon wins:
+		 *   depth 1 - flush against this half-slab mount (the look the block was designed for).
+		 *   depth 2 - CBC's classic full-block layout, one air gap between mount and breech, so a gunner
+		 *             who builds the stock CBC way still gets a working mount.
+		 * Inline of CBC's private getContraption(assemblyPos) + its body scan, per candidate.
+		 */
+		AbstractMountedCannonContraption mountedCannon = null;
+		for (int candidateDepth : new int[] { 1, 2 }) {
+			BlockPos candidate = this.worldPosition.relative(vertical, -candidateDepth);
+			if (this.getLevel().isOutsideBuildHeight(candidate))
+				throw cannonBlockOutsideOfWorld(candidate);
+			if (!(this.getLevel().getBlockState(candidate).getBlock() instanceof CannonContraptionProviderBlock providerBlock))
+				continue;
+			AbstractMountedCannonContraption candidateCannon = providerBlock.getCannonContraption();
+			if (candidateCannon == null || !candidateCannon.assemble(this.getLevel(), candidate))
+				continue;
+			mountedCannon = candidateCannon;
+			this.assemblyDepth = candidateDepth;
+			break;
 		}
-
-		// Inline CBC's private helper getContraption(assemblyPos):
-		BlockState assemblyState = this.getLevel().getBlockState(assemblyPos);
-		if (!(assemblyState.getBlock() instanceof CannonContraptionProviderBlock providerBlock)) return;
-		AbstractMountedCannonContraption mountedCannon = providerBlock.getCannonContraption();
-		if (mountedCannon == null) return;
-		if (!mountedCannon.assemble(this.getLevel(), assemblyPos)) return;
+		if (mountedCannon == null) {
+			this.assemblyDepth = 1;
+			this.fcAssembleFailure = null;
+			logAssembleFail("no cannon body to collect: expected the cannon's breech/first block at "
+					+ this.worldPosition.relative(vertical, -1).toShortString() + " (flush against the mount) or "
+					+ this.worldPosition.relative(vertical, -2).toShortString()
+					+ " (CBC's one-gap layout). A big cannon also needs exactly one OPEN end - two open ends or"
+					+ " none is rejected as an incomplete/invalid cannon by CBC itself.");
+			return;
+		}
 
 		Direction facing = this.getBlockState().getValue(CannonMountBlock.HORIZONTAL_FACING);
 		Direction facing1 = mountedCannon.initialOrientation();
-		if (facing.getAxis() != facing1.getAxis() && facing1.getAxis().isHorizontal()) return;
+		if (facing.getAxis() != facing1.getAxis() && facing1.getAxis().isHorizontal()) {
+			this.fcAssembleFailure = null;
+			logAssembleFail("bore points " + facing1.getSerializedName() + " but the mount's facing axis is "
+					+ facing.getAxis() + "; wrench the mount to the bore's axis (or turn the cannon) before assembling");
+			return;
+		}
+		this.fcAssembleFailure = null;
 
 		// Activates CBC's tick rotation branch. Written via reflection (see RUNNING_FIELD).
 		setRunning(this, true);
@@ -308,9 +377,10 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 
 	/**
 	 * Override CBC's protected resetContraptionToOffset() which hardcodes relative(vertical, -2)
-	 * when positioning the mounted cannon contraption entity. Our half-slab layout moved
-	 * assemblyPos to relative(vertical, -1); entity position MUST match assemblyPos formula, otherwise
-	 * the assembled cannon ends up one block away from where the assembly scan actually placed it.
+	 * when positioning the mounted cannon contraption entity. Our mount accepts both the flush half-slab
+	 * layout (depth 1) and CBC's one-gap layout (depth 2), and {@link #assemble()} records the depth it
+	 * collected the cannon at; the entity position MUST use that same depth, otherwise the assembled cannon
+	 * ends up one block away from where the assembly scan actually placed it.
 	 */
 	@Override
 	protected void resetContraptionToOffset() {
@@ -335,8 +405,8 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		this.mountedContraption.yRotO = this.mountedContraption.getYRot();
 
 		Direction vertical = this.getBlockState().getValue(BlockStateProperties.VERTICAL_DIRECTION);
-		// Formula MUST match assemble()'s assemblyPos line (both use relative(vertical, -1)).
-		Vec3 vec = Vec3.atBottomCenterOf((this.worldPosition.relative(vertical, -1)));
+		// Formula MUST match the depth assemble() actually collected the cannon at (flush = 1, CBC's gap = 2).
+		Vec3 vec = Vec3.atBottomCenterOf((this.worldPosition.relative(vertical, -this.assemblyDepth)));
 		this.mountedContraption.setPos(vec);
 	}
 
@@ -952,12 +1022,30 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 	}
 
 	public void consoleAssemble() {
-		if (this.level == null || this.level.isClientSide() || this.isRunning())
+		Level level = this.getLevel();
+		if (level == null || level.isClientSide())
 			return;
+		// Trace the request itself: with this line present but no following "refused"/"assembled" line the
+		// mount is stuck in a state nobody expected (running flag already set).
+		BlockState state = this.getBlockState();
+		CBCFireControl.LOGGER.info("[cbc_firecontrol] assemble requested at {} in {} (facing={}, vertical={})",
+				this.worldPosition.toShortString(), level.dimension().location(),
+				state.getValue(CannonMountBlock.HORIZONTAL_FACING).getSerializedName(),
+				state.getValue(BlockStateProperties.VERTICAL_DIRECTION).getSerializedName());
+		if (this.isRunning()) {
+			CBCFireControl.LOGGER.info("[cbc_firecontrol] assemble at {} ignored: the mount already reports an"
+					+ " assembled cannon (disassemble it first)", this.worldPosition.toShortString());
+			return;
+		}
 		try {
 			this.assemble();
+			if (!this.isRunning() && this.fcAssembleFailure == null) {
+				CBCFireControl.LOGGER.warn("[cbc_firecontrol] console assemble at {} produced no contraption;"
+						+ " the refuse reason is logged just above", this.worldPosition.toShortString());
+			}
 		} catch (AssemblyException e) {
-			CBCFireControl.LOGGER.warn("console assemble failed at {}: {}", this.worldPosition, e.getMessage());
+			this.fcAssembleFailure = e;
+			CBCFireControl.LOGGER.warn("console assemble failed at {}: {}", this.worldPosition.toShortString(), e.getMessage());
 		}
 	}
 
@@ -965,6 +1053,7 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		if (this.level == null || this.level.isClientSide() || !this.isRunning())
 			return;
 		this.disassemble();
+		this.fcAssembleFailure = null;
 	}
 
 	public void consoleFire() {

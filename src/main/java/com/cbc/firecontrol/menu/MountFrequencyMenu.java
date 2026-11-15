@@ -8,11 +8,11 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.block.entity.BlockEntity;
 
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
@@ -107,8 +107,8 @@ public class MountFrequencyMenu extends GhostItemMenu<BlockPos> {
 	public void pushToBlockEntity() {
 		if (player == null || player.level().isClientSide())
 			return;
-		BlockEntity be = player.level().getBlockEntity(contentHolder);
-		if (be instanceof AdvancedCannonMountBlockEntity mount) {
+		AdvancedCannonMountBlockEntity mount = resolveMount(player);
+		if (mount != null) {
 			ItemStack[] arr = new ItemStack[ghostInventory.getSlots()];
 			for (int i = 0; i < arr.length; i++)
 				arr[i] = ghostInventory.getStackInSlot(i);
@@ -137,13 +137,38 @@ public class MountFrequencyMenu extends GhostItemMenu<BlockPos> {
 		return slotIn.container == playerInventory;
 	}
 
+	/** The mount position this panel controls, readable outside this class (see CBCFCNetwork). */
+	public BlockPos mountPos() {
+		return contentHolder == null ? null : (BlockPos) contentHolder;
+	}
+
+	/**
+	 * Resolves the mount this menu controls. On a Sable ship the player's own level and the panel's position can
+	 * sit on different coordinate scales (the player reports sub-level local coordinates while the raycast that
+	 * opened the panel reports the ship's footprint coordinate), so the player's level alone is not enough: fall
+	 * back to the ship's world dimension before giving up.
+	 */
+	private AdvancedCannonMountBlockEntity resolveMount(Player playerIn) {
+		if (contentHolder == null)
+			return null;
+		BlockPos pos = (BlockPos) contentHolder;
+		if (playerIn.level().getBlockEntity(pos) instanceof AdvancedCannonMountBlockEntity mount)
+			return mount;
+		if (playerIn.getServer() == null)
+			return null;
+		ServerLevel world = playerIn.getServer().overworld();
+		return world != playerIn.level() && world.getBlockEntity(pos) instanceof AdvancedCannonMountBlockEntity mount
+				? mount
+				: null;
+	}
+
 	@Override
 	public boolean stillValid(Player playerIn) {
-		if (contentHolder == null)
-			return false;
-		BlockPos pos = (BlockPos) contentHolder;
-		if (!(playerIn.level().getBlockEntity(pos) instanceof AdvancedCannonMountBlockEntity))
-			return false;
-		return playerIn.distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5) <= 16 * 16;
+		// Presence of the mount is the whole test. A distance check here would close the panel instantly for
+		// ship users: on a Sable ship the player's position is in the sub-level's local scale while this menu's
+		// position is in the ship's footprint scale, so the arithmetic yields nonsense. The panel is a fixed
+		// radio terminal, exactly like Create's controller, so it stays open until the player closes it or the
+		// mount is gone.
+		return resolveMount(playerIn) != null;
 	}
 }

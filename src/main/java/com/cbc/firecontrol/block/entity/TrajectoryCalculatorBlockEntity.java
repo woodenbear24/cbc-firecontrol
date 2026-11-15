@@ -22,9 +22,13 @@ import com.cbc.firecontrol.ballistics.MountSnapshot;
 import com.cbc.firecontrol.ballistics.TrajectoryComputer;
 import com.cbc.firecontrol.ballistics.RoundState;
 import com.cbc.firecontrol.ballistics.TrajectoryPrediction;
+import com.cbc.firecontrol.compat.SableShipCoordinates;
 import com.cbc.firecontrol.init.CBCItems;
 import com.cbc.firecontrol.item.CalculatorLinkData;
+import com.cbc.firecontrol.item.TargetDesignatorItem;
+import com.cbc.firecontrol.item.TargetDesignatorLinkData;
 import com.cbc.firecontrol.menu.TrajectoryCalculatorMenu;
+import com.cbc.firecontrol.network.HeadAimSyncPayload;
 import com.simibubi.create.Create;
 import com.simibubi.create.content.redstone.link.IRedstoneLinkable;
 import com.simibubi.create.content.redstone.link.RedstoneLinkNetworkHandler.Frequency;
@@ -56,7 +60,10 @@ import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
+import org.jetbrains.annotations.Nullable;
+
 import net.neoforged.neoforge.items.ItemStackHandler;
+import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
  * Trajectory Calculator block entity: five real inventory slots, each holding at most one
@@ -111,13 +118,40 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	 * solve is dropped at once rather than waiting out the window.
 	 */
 	public static final int DEFAULT_MISSION_WAIT_SECONDS = 5;
-	/** Bounds of that window as entered on the console's target page. */
+	/** Bounds of that window as entered on the console's config page. */
 	public static final int MIN_MISSION_WAIT_SECONDS = 0;
 	public static final int MAX_MISSION_WAIT_SECONDS = 60;
+	/**
+	 * Default ceiling on the redstone level this console transmits. Fifteen is all a Create link can carry, and a
+	 * mount turns at its full set RPM only at that strength; a lower ceiling makes the gun crawl onto aim instead,
+	 * which is how a spotter keeps a long-range shot from being overslew.
+	 */
+	public static final int DEFAULT_MAX_LINK_LEVEL = 15;
+	/** Bounds of that ceiling as entered on the console's config page. One still opens the fire channel. */
+	public static final int MIN_MAX_LINK_LEVEL = 1;
+	public static final int MAX_MAX_LINK_LEVEL = 15;
 	/** Orders a console holds waiting for a mount before it starts discarding the oldest. */
 	public static final int MAX_PENDING_MISSIONS = 16;
 	/** Orders a single mount queue holds, including the one it is working on. */
 	public static final int MAX_MISSIONS_PER_MOUNT = 16;
+
+	/* ------------------------------------------------------------------ head aiming (off-hand designator) */
+
+	/**
+	 * Period of a head-aim solve in ticks. A console flying every linked gun's next shot every tick would be doing
+	 * a flight per gun per tick on top of everything else it already does; two ticks is half that, and it is still
+	 * far quicker than the slew a mount can perform, which is what actually limits how well a gun tracks the sight
+	 * line.
+	 */
+	private static final int HEAD_AIM_SOLVE_INTERVAL = 2;
+	/**
+	 * The spotter's sight line is quantised to this angle before it becomes a row's desired aim. A crosshair
+	 * trembles continuously, and every new desired angle replaces the solution object the drive loop measures
+	 * against, which drops that row's derivative term; quantising to well inside the loop's deadband keeps the
+	 * tremble from rewriting the aim every tick while still holding the bore parallel to the sight line to within
+	 * a quarter of a degree.
+	 */
+	private static final double CUE_QUANT_DEG = 0.25;
 
 	/**
 	 * Slack added to a mount's own reach when the designator terrain walk asks whether a cell can be shot at.
@@ -295,12 +329,18 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	/** Set whenever queues or phases moved, so the client copy is refreshed even if no aim did. */
 	private boolean missionsChanged;
 	/**
-	 * How long a mount may keep an order it cannot take, in seconds, entered on the target page's window block.
+	 * How long a mount may keep an order it cannot take, in seconds, entered on the config page's window block.
 	 * This is read
 	 * live rather than stamped onto an order at hand-off: lengthening the window also rescues the orders that
 	 * are already waiting, and shortening it lets stale ones go sooner.
 	 */
 	private int missionWaitSeconds = DEFAULT_MISSION_WAIT_SECONDS;
+
+	/**
+	 * Highest link level this console may transmit, entered on the config page. It caps the aim controller's
+	 * output AND the fire pulse, so it is the single number that says how hard the console pushes the mount radio.
+	 */
+	private int maxLinkLevel = DEFAULT_MAX_LINK_LEVEL;
 
 	/* Client mirror of the mission state, shipped in the data packet for the tasks board. */
 	private final List<FireMission> clientMissions = new ArrayList<>();
@@ -371,6 +411,37 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	*/
 	private UUID calculatorId;
 
+	/**
+	 * The spotter whose sight line this console is following, and the name to read out when somebody else asks for
+	 * the console. Head aiming is a claim rather than a command: a console can point its guns along exactly one
+	 * sight line at a time, so whoever puts a bound designator in their off hand first holds the claim, and the
+	 * next spotter is refused until that one lets go. Held on the console because the console is what has to stop
+	 * taking fire missions while it is being pointed around.
+	 */
+	private UUID headAimOwner;
+	private String headAimOwnerName = "";
+	/**
+	 * Countdown to the next cue read. The sight line is sampled on the same cadence as the head-aim solve: a mount
+	 * turns a few degrees a second, so reading a spotter's head more often than that buys nothing, and the ship
+	 * coordinate bridge each linked gun goes through is not free.
+	 */
+	private int headAimCueCooldown;
+	/** The next solve must be sent even if its answer is identical, because a spotter just took the console. */
+	private boolean headAimSyncPending;
+	/** The cue each row is being driven to, quantised; NaN when the row has no cue. */
+	private final double[] cueYaw = new double[SLOTS];
+	private final double[] cuePitch = new double[SLOTS];
+	/** Each row's muzzle in the scale the console reads it in (hull-relative on a ship), refreshed by the solve. */
+	private final Vec3[] headAimMuzzleHull = new Vec3[SLOTS];
+	/**
+	 * What was last reported to the holder, in absolute world coordinates, so a spotter holding steady on a
+	 * converged gun sends no packets at all. Float precision is not enough here: a Sable ship sits far enough from
+	 * the origin that its world coordinates need the extra mantissa to stay within a block of where they were sent.
+	 */
+	private final double[] headAimSentMuzzle = new double[SLOTS * 3];
+	private final double[] headAimSentImpact = new double[SLOTS * 3];
+	private final byte[] headAimSentStatus = new byte[SLOTS];
+
 	public TrajectoryCalculatorBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
 		super(type, pos, state);
 		Arrays.fill(predictions, TrajectoryPrediction.EMPTY);
@@ -385,6 +456,12 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		Arrays.fill(reachMunition, "");
 		Arrays.fill(previousError, Double.NaN);
 		Arrays.fill(smoothedRate, Double.NaN);
+		Arrays.fill(cueYaw, Double.NaN);
+		Arrays.fill(cuePitch, Double.NaN);
+		Arrays.fill(headAimMuzzleHull, Vec3.ZERO);
+		Arrays.fill(headAimSentMuzzle, 0.0);
+		Arrays.fill(headAimSentImpact, 0.0);
+		Arrays.fill(headAimSentStatus, HeadAimSyncPayload.STATUS_NONE);
 		for (int slot = 0; slot < SLOTS; slot++)
 			missionQueues[slot] = new ArrayDeque<>();
 		// lazyTick is the safety net: a mount finishing assembly or its chunk reloading changes a solution
@@ -497,12 +574,21 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			mountChannelCooldown = MOUNT_CHANNEL_SYNC_INTERVAL;
 			syncChannelsFromMounts(level);
 		}
+		/*
+		 * Head aiming runs before the drive loop, because the cue it writes is the angle the loop measures the
+		 * bores against this very tick. While a spotter holds the console its fire missions are parked: nothing is
+		 * queued, nothing fires, and the mission clock does not run either.
+		 */
+		if (headAimOwner != null)
+			tickHeadAim(level);
 		updateEmittedLinkPower(level);
 		driveAimChannels(level);
-		releaseFiredMissions(level);
-		if (missionCooldown-- <= 0) {
-			missionCooldown = MISSION_CHECK_INTERVAL;
-			tickMissions(level);
+		if (headAimOwner == null) {
+			releaseFiredMissions(level);
+			if (missionCooldown-- <= 0) {
+				missionCooldown = MISSION_CHECK_INTERVAL;
+				tickMissions(level);
+			}
 		}
 		/*
 		 * A designator line that found nothing in the client's simulated space: walk it forward on the server,
@@ -519,8 +605,16 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			if (mountLoadCooldown[slot] > 0)
 				mountLoadCooldown[slot]--;
 		if (recomputeCooldown-- <= 0) {
-			recomputeCooldown = RECOMPUTE_INTERVAL;
+			// Head aiming wants the forward predictions twice as often as a console solving for a typed target,
+			// and it gets them for the same price: the solve it replaces is the inverse one, not the flight.
+			recomputeCooldown = headAimOwner == null ? RECOMPUTE_INTERVAL : HEAD_AIM_SOLVE_INTERVAL;
 			recomputeAndSync();
+			/*
+			 * The holder's markers are read straight out of the predictions that loop just flew, so a head-aim
+			 * answer costs no flight of its own - and nothing is sent at all when no answer moved.
+			 */
+			if (headAimOwner != null)
+				syncHeadAimImpacts(level);
 		}
 	}
 
@@ -545,12 +639,22 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		Vec3[] freshMuzzle = new Vec3[SLOTS];
 		boolean changed = false;
 		for (int slot = 0; slot < SLOTS; slot++) {
-			SlotResult result = resolveSlot(level, slot, false, missionAimTarget(slot));
+			/*
+			 * While a spotter holds the console nothing is solved against a target: the rows are pointed along a
+			 * live sight line, and the inverse solve is the expensive half of this loop. The forward flight still
+			 * runs, because that flight IS the answer the holder's markers are drawn from. The cue angles the
+			 * head-aim pass wrote for the rows are carried through untouched, so this loop neither overwrites them
+			 * nor reads them as a change worth broadcasting.
+			 */
+			SlotResult result = resolveSlot(level, slot, false,
+					headAimOwner == null ? missionAimTarget(slot) : null);
 			fresh[slot] = result.prediction();
-			freshAims[slot] = result.aim();
+			freshAims[slot] = headAimOwner == null ? result.aim() : aims[slot];
 			freshRounds[slot] = result.snapshot() == null ? RoundState.READY : result.snapshot().round();
 			freshReach[slot] = recomputeReach(slot, result);
 			freshMuzzle[slot] = freshReach[slot].reachable() ? result.snapshot().muzzle() : Vec3.ZERO;
+			if (headAimOwner != null)
+				headAimMuzzleHull[slot] = result.snapshot() == null ? Vec3.ZERO : result.snapshot().muzzle();
 			if (!fresh[slot].equals(predictions[slot]) || !sameAim(freshAims[slot], aims[slot])
 					|| freshRounds[slot] != rounds[slot] || !MaxReach.same(freshReach[slot], maxReach[slot]))
 				changed = true;
@@ -600,6 +704,11 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		Level level = getLevel();
 		if (level == null || level.isClientSide() || !hasTarget)
 			return new AimSummary(0, 0, 0, Double.NaN);
+		if (headAimOwner != null) {
+			// The spotter's head is driving the rows; the Aim button would hand those rows back to a solved aim.
+			player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.head_aim.busy"), true);
+			return new AimSummary(0, 0, 0, Double.NaN);
+		}
 		int linked = 0, armed = 0, refused = 0;
 		double worstMiss = Double.NaN;
 		for (int slot = 0; slot < SLOTS; slot++) {
@@ -742,12 +851,24 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			return new SlotResult(forward, AimSolution.EMPTY, mount, snapshot);
 
 		/*
+		 * The scale the target is stated in, matched to the scale the muzzle was read in. On a Sable ship the
+		 * contraption lives in the ship's sub-level, so the muzzle is hull-relative while a target read off the
+		 * world (typed in, taken from a map, or locked from outside the ship) is absolute: measured against each
+		 * other the two are millions of blocks apart, which is what made every ship gun answer
+		 * TARGET_OUT_OF_REACH. Converting the target into ship coordinates fixes the distance AND keeps the solved
+		 * angles hull-relative, which is the only kind of angle a gun bolted to a deck can turn to; a target that
+		 * is already hull-relative is left exactly as given. The mount itself is passed along so the conversion
+		 * uses the ship the gun stands on - in a duel the ship under the target would be the wrong frame of
+		 * reference. See com.cbc.firecontrol.compat.SableShipCoordinates.
+		 */
+		Vec3 solvedTarget = SableShipCoordinates.resolveTarget(level, mount, snapshot.muzzle(), aimTarget);
+		/*
 		* The Level is only handed to the solver on the Apply path. Its terrain check flies the SOLVED path
 		* through real blocks for every candidate elevation it verifies, and the readouts recompute every
 		* RECOMPUTE_INTERVAL ticks for up to five mounts at once - affordable to do once when the gunner commits
 		* an aim, not continuously while the rows are just being kept live.
 		*/
-		AimSolution aim = InverseBallistics.solve(snapshot, aimTarget, aimEnvelopeFor(mount, snapshot),
+		AimSolution aim = InverseBallistics.solve(snapshot, solvedTarget, aimEnvelopeFor(mount, snapshot),
 				checkTerrain ? level : null);
 		return new SlotResult(forward, aim, mount, snapshot);
 	}
@@ -867,6 +988,11 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		Level level = getLevel();
 		if (!(level instanceof ServerLevel serverLevel))
 			return;
+		if (headAimOwner != null) {
+			// A console being pointed by a spotter's head has no business loading terrain to look for an order.
+			player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.head_aim.busy"), true);
+			return;
+		}
 		if (!isFinite(origin) || !isFinite(direction) || direction.lengthSqr() < 1.0e-9 || !(rayDistance > scanned))
 			return; // no line to follow, or nothing left of it beyond what the client already covered
 
@@ -1000,11 +1126,303 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		Level level = getLevel();
 		if (level == null || level.isClientSide())
 			return;
+		if (headAimOwner != null) {
+			// Nothing is filed while a spotter is pointing the guns around: an order filed here would fire the
+			// instant a bore happened to cross the sight line, which is not what a lock asks for.
+			player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.head_aim.busy"), true);
+			return;
+		}
 		setTarget(cell.getX(), cell.getY(), cell.getZ());
 		int handed = addMission(cell.getX(), cell.getY(), cell.getZ());
 		player.displayClientMessage(Component.translatable(
 				"cbc_firecontrol.calculator.target_designator.locked_mission",
 				level.getBlockState(cell).getBlock().getName(), cell.getX(), cell.getY(), cell.getZ(), handed), true);
+	}
+
+	/* ------------------------------------------------------------------ head aiming for a spotter's sight line */
+
+	/** Whether some spotter is currently pointing this console's guns with their own head. */
+	public boolean headAimActive() {
+		return headAimOwner != null;
+	}
+
+	/** The spotter holding the console, or null when nobody is head-aiming it. */
+	@Nullable
+	public UUID headAimOwner() {
+		return headAimOwner;
+	}
+
+	/** Display name of the holder, for the readout that tells a second spotter who to ask. */
+	public String headAimOwnerName() {
+		return headAimOwnerName == null ? "" : headAimOwnerName;
+	}
+
+	/**
+	 * Client-side view of the claim: the console's copy of this flag is the holder's name, which is only ever
+	 * written while the server actually holds a claim, so a non-empty name is exactly "somebody is head-aiming
+	 * this console".
+	 */
+	public boolean headAimHeldOnClient() {
+		return headAimOwnerName != null && !headAimOwnerName.isEmpty();
+	}
+
+	/**
+	 * Take the console over for head aiming. The claim belongs to whoever asks first: a console drives its bores
+	 * parallel to exactly one sight line, so a second spotter is refused rather than left fighting the first one
+	 * for the same guns. The same holder asking again - which is what a client's retry does once it has already
+	 * won - is accepted without disturbing anything.
+	 *
+	 * <p>Taking the console parks its fire missions and its fire channels, so nothing queued before the claim can
+	 * go out and nothing aimed at during it gets ordered.
+	 */
+	public boolean claimHeadAim(ServerPlayer player) {
+		Level level = getLevel();
+		if (level == null || level.isClientSide())
+			return false;
+		if (headAimOwner != null && !headAimOwner.equals(player.getUUID())) {
+			player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.head_aim.occupied",
+					headAimOwnerName.isEmpty() ? "?" : headAimOwnerName), true);
+			return false;
+		}
+		if (headAimOwner != null)
+			return true;
+		headAimOwner = player.getUUID();
+		headAimOwnerName = player.getGameProfile().getName();
+		clearFireMissions(level);
+		for (int slot = 0; slot < SLOTS; slot++) {
+			cueYaw[slot] = Double.NaN;
+			cuePitch[slot] = Double.NaN;
+			// The rows stop being measured against whatever was solved before: each one takes its cue from here.
+			drivenSolution[slot] = null;
+		}
+		Arrays.fill(headAimSentMuzzle, 0.0);
+		Arrays.fill(headAimSentImpact, 0.0);
+		Arrays.fill(headAimSentStatus, HeadAimSyncPayload.STATUS_NONE);
+		headAimSyncPending = true;
+		headAimCueCooldown = 0;
+		recomputeCooldown = 0;
+		setChanged();
+		sendData();
+		player.displayClientMessage(Component.translatable("cbc_firecontrol.calculator.head_aim.engaged",
+				worldPosition.getX(), worldPosition.getY(), worldPosition.getZ()), true);
+		return true;
+	}
+
+	/**
+	 * Give the console back. Every row is disarmed and its channels quieted, because a gun left pointing at a
+	 * sight line nobody is holding any more is a gun nobody asked for; the console resumes its own readouts on the
+	 * next recompute, and fire missions can be filed again from then on.
+	 */
+	public void releaseHeadAim(@Nullable ServerPlayer player, String reasonKey) {
+		if (headAimOwner == null)
+			return;
+		UUID owner = headAimOwner;
+		headAimOwner = null;
+		headAimOwnerName = "";
+		headAimSyncPending = false;
+		Level level = getLevel();
+		if (level != null && !level.isClientSide()) {
+			for (int slot = 0; slot < SLOTS; slot++) {
+				cueYaw[slot] = Double.NaN;
+				cuePitch[slot] = Double.NaN;
+				if (aimArmed[slot] || aimOnTarget[slot])
+					aimStateChanged = true;
+				aimArmed[slot] = false;
+				aimOnTarget[slot] = false;
+				drivenSolution[slot] = null;
+				resetPidRow(slot);
+				quietAxes(level, slot);
+				setChannelStrength(level, slot, AdvancedCannonMountBlockEntity.CH_FIRE, 0);
+			}
+			recomputeCooldown = 0;
+			setChanged();
+			sendData();
+		}
+		ServerPlayer told = player;
+		if (told == null && level != null && level.getServer() != null)
+			told = level.getServer().getPlayerList().getPlayer(owner);
+		if (told != null)
+			told.displayClientMessage(Component.translatable(reasonKey), true);
+	}
+
+	/**
+	 * Park every order this console holds and hand back every row it was driving for them, for the length of a
+	 * head-aim claim. Orders are dropped rather than kept waiting: a console being pointed by hand has no business
+	 * queueing shots, and an order that survived the claim would be a shot owed to somebody else's crosshair.
+	 */
+	private void clearFireMissions(Level level) {
+		if (!pendingMissions.isEmpty())
+			pendingMissions.clear();
+		for (int slot = 0; slot < SLOTS; slot++) {
+			missionQueues[slot].clear();
+			disarmMissionRow(level, slot);
+		}
+		missionsChanged = true;
+		setChanged();
+	}
+
+	/**
+	 * Keep every linked row pointed along the holder's sight line. Runs each tick, ahead of the drive loop, so the
+	 * cue the loop measures the bores against is this tick's rather than last tick's.
+	 *
+	 * <p>What is written is an aim angle, not a target: {@link #driveAimChannels} already compares each mount's own
+	 * bore against the angle its row holds and transmits the difference, so driving onto a cue costs nothing beyond
+	 * reading the spotter's rotation. The angles are quantised so a crosshair's tremble does not re-write the row's
+	 * solution every tick - which would drop that row's derivative term every tick - and they are taken from the
+	 * sight line rather than from where the guns are: keeping the bores parallel to what the spotter looks at is the
+	 * whole request, and a mount slewed at a few degrees a second cannot chase a moving head in any case.
+	 */
+	private void tickHeadAim(Level level) {
+		if (headAimCueCooldown-- > 0)
+			return;
+		headAimCueCooldown = HEAD_AIM_SOLVE_INTERVAL;
+		ServerPlayer owner = headAimHolder(level);
+		if (owner == null || !owner.isAlive() || !holdsBoundDesignatorInOffHand(owner)) {
+			/*
+			 * The claim ends by looking at the world rather than waiting for a packet: the designator left the off
+			 * hand, the spotter died, or they left the game. No release message has to arrive for the console to
+			 * come back to its normal duty.
+			 */
+			releaseHeadAim(owner, owner == null ? "cbc_firecontrol.calculator.head_aim.owner_gone"
+					: "cbc_firecontrol.calculator.head_aim.released");
+			return;
+		}
+		Vec3 look = owner.getLookAngle();
+		for (int slot = 0; slot < SLOTS; slot++) {
+			if (!isSlotActive(slot)) {
+				cueYaw[slot] = Double.NaN;
+				cuePitch[slot] = Double.NaN;
+				continue;
+			}
+			AdvancedCannonMountBlockEntity mount = mountForRow(level, slot);
+			if (mount == null)
+				continue;
+			/*
+			 * The sight line has to be read in the frame the gun can turn in. Rather than deciding that frame
+			 * here, the spotter's aim point is handed to the same bridge the console already uses for a typed or
+			 * locked target (com.cbc.firecontrol.compat.SableShipCoordinates#resolveTarget), which carries a world
+			 * point into the ship's own coordinates only when the two really are in different scales and says so
+			 * when it cannot. The direction from the mount's bore origin to that point is then a bearing the deck
+			 * can follow: when gun and spotter share a frame the point is returned untouched, and the difference
+			 * is the spotter's look direction exactly.
+			 */
+			Vec3 anchor = mount.currentBoreOrigin();
+			Vec3 farPoint = SableShipCoordinates.resolveTarget(mount.getLevel(), mount, anchor,
+					owner.getEyePosition(1.0F).add(look.scale(1000.0)));
+			Vec3 cue = farPoint.subtract(anchor);
+			if (cue.lengthSqr() < 1.0e-9)
+				continue;
+			cue = cue.normalize();
+			double yaw = quantizeCue(InverseBallistics.yawOf(cue));
+			double pitch = quantizeCue(InverseBallistics.pitchOf(cue));
+			aimArmed[slot] = true;
+			if (cueYaw[slot] == yaw && cuePitch[slot] == pitch)
+				continue; // Same quantised angle: keep the row's existing solution and its rate history.
+			cueYaw[slot] = yaw;
+			cuePitch[slot] = pitch;
+			aims[slot] = cueSolution(yaw, pitch);
+			aimStateChanged = true;
+		}
+	}
+
+	/** The player this console is head-aiming for, or null when they are not in the world to be read. */
+	@Nullable
+	private ServerPlayer headAimHolder(Level level) {
+		if (headAimOwner == null || level.getServer() == null)
+			return null;
+		return level.getServer().getPlayerList().getPlayer(headAimOwner);
+	}
+
+	/**
+	 * Report where each row's next shot would land while it follows the sight line, read out of the forward
+	 * predictions the readout loop just flew - a head-aim answer therefore costs no flight of its own - and send
+	 * nothing when no answer moved.
+	 *
+	 * <p>The coordinates are converted to the world before they are sent. On a ship the console's own readouts are
+	 * hull-relative, and a marker drawn from those would sit a ship's width away from the terrain the spotter is
+	 * actually looking at.
+	 */
+	private void syncHeadAimImpacts(Level level) {
+		ServerPlayer owner = headAimHolder(level);
+		if (owner == null)
+			return;
+		double[] muzzle = new double[SLOTS * 3];
+		double[] impact = new double[SLOTS * 3];
+		byte[] status = new byte[SLOTS];
+		boolean changed = headAimSyncPending;
+		for (int slot = 0; slot < SLOTS; slot++) {
+			TrajectoryPrediction prediction = predictions[slot];
+			status[slot] = switch (prediction.status()) {
+				case BLOCK_HIT -> HeadAimSyncPayload.STATUS_TERRAIN;
+				case OK, LIFETIME_END, OUT_OF_WORLD -> HeadAimSyncPayload.STATUS_STALL;
+				default -> HeadAimSyncPayload.STATUS_NONE;
+			};
+			// A row with nothing shootable has no flight behind its answer, so it is not drawn and not converted.
+			AdvancedCannonMountBlockEntity mount = status[slot] == HeadAimSyncPayload.STATUS_NONE ? null
+					: mountForRow(level, slot);
+			Vec3 hullMuzzle = headAimMuzzleHull[slot];
+			Vec3 hullImpact = new Vec3(prediction.impactX(), prediction.impactY(), prediction.impactZ());
+			Vec3 worldMuzzle = mount == null ? null
+					: SableShipCoordinates.shipLocalToWorld(level, mount, hullMuzzle);
+			Vec3 worldImpact = mount == null ? null
+					: SableShipCoordinates.shipLocalToWorld(level, mount, hullImpact);
+			Vec3 sentMuzzle = worldMuzzle == null ? hullMuzzle : worldMuzzle;
+			Vec3 sentImpact = worldImpact == null ? hullImpact : worldImpact;
+			muzzle[slot * 3] = sentMuzzle.x;
+			muzzle[slot * 3 + 1] = sentMuzzle.y;
+			muzzle[slot * 3 + 2] = sentMuzzle.z;
+			impact[slot * 3] = sentImpact.x;
+			impact[slot * 3 + 1] = sentImpact.y;
+			impact[slot * 3 + 2] = sentImpact.z;
+			if (status[slot] != headAimSentStatus[slot] || muzzle[slot * 3] != headAimSentMuzzle[slot * 3]
+					|| muzzle[slot * 3 + 1] != headAimSentMuzzle[slot * 3 + 1]
+					|| muzzle[slot * 3 + 2] != headAimSentMuzzle[slot * 3 + 2]
+					|| impact[slot * 3] != headAimSentImpact[slot * 3]
+					|| impact[slot * 3 + 1] != headAimSentImpact[slot * 3 + 1]
+					|| impact[slot * 3 + 2] != headAimSentImpact[slot * 3 + 2])
+				changed = true;
+		}
+		if (!changed)
+			return;
+		System.arraycopy(muzzle, 0, headAimSentMuzzle, 0, SLOTS * 3);
+		System.arraycopy(impact, 0, headAimSentImpact, 0, SLOTS * 3);
+		System.arraycopy(status, 0, headAimSentStatus, 0, SLOTS);
+		headAimSyncPending = false;
+		PacketDistributor.sendToPlayer(owner,
+				new HeadAimSyncPayload(worldPosition, owner.getUUID(), SLOTS, muzzle, impact, status));
+	}
+
+	/** Whether the designator bound to THIS console is the one sitting in this player's off hand. */
+	private boolean holdsBoundDesignatorInOffHand(Player player) {
+		ItemStack off = player.getOffhandItem();
+		if (!(off.getItem() instanceof TargetDesignatorItem))
+			return false;
+		TargetDesignatorLinkData data = TargetDesignatorItem.bindingOf(off);
+		if (data == null)
+			return false;
+		UUID id = data.calculatorIdOrNull();
+		/*
+		 * Coordinates decide normally; a matching console id also counts, because a console that was picked up and
+		 * placed elsewhere is still the console the designator was bound to, and a card whose stored coordinates
+		 * went stale must not end a working claim on that account.
+		 */
+		return data.calculator().equals(worldPosition)
+				|| (calculatorId != null && id != null && calculatorId.equals(id));
+	}
+
+	/** The sight line becomes an angle the drive loop can hold: one quarter degree, well inside its deadband. */
+	private static double quantizeCue(double degrees) {
+		return Math.round(degrees / CUE_QUANT_DEG) * CUE_QUANT_DEG;
+	}
+
+	/**
+	 * A cue aim for the drive loop to measure against. It carries no miss figures, because there was no target to
+	 * miss: the console is pointing the bore, not solving for a point, and what the shot actually reaches is the
+	 * impact the head-aim sync reports alongside it.
+	 */
+	private static AimSolution cueSolution(double yawDeg, double pitchDeg) {
+		return new AimSolution(AimOutcome.CUE, yawDeg, pitchDeg, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0,
+				AimArc.FLAT, false, Double.NaN, Double.NaN);
 	}
 
 	private static boolean isFinite(Vec3 v) {
@@ -1024,7 +1442,10 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		tag.putDouble("TargetY", targetY);
 		tag.putDouble("TargetZ", targetZ);
 		tag.putInt("MissionWait", missionWaitSeconds);
+		tag.putInt("MaxLinkLevel", maxLinkLevel);
 		if (clientPacket) {
+			// Who is pointing the console by head, so a second spotter can be told whom to ask.
+			tag.putString("HeadAimUser", headAimOwnerName == null ? "" : headAimOwnerName);
 			tag.put("Solutions", writeSolutions());
 			tag.put("Aims", writeAims());
 			tag.put("MaxRanges", writeReach());
@@ -1060,8 +1481,16 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		targetZ = tag.getDouble("TargetZ");
 		if (tag.contains("MissionWait"))
 			missionWaitSeconds = clampMissionWaitSeconds(tag.getInt("MissionWait"));
+		if (tag.contains("MaxLinkLevel"))
+			maxLinkLevel = clampMaxLinkLevel(tag.getInt("MaxLinkLevel"));
 		// Both sides re-register on read: the server builds its transmitters, the client refreshes its view.
 		channelsChanged = true;
+		/*
+		 * Only the client copy carries a head-aim holder: the claim itself lives on the server and is never
+		 * persisted, so a console that reloads with nobody holding it reads the name back empty.
+		 */
+		if (clientPacket && tag.contains("HeadAimUser", Tag.TAG_STRING))
+			headAimOwnerName = tag.getString("HeadAimUser");
 		if (tag.contains("Solutions"))
 			readSolutions(tag.getList("Solutions", Tag.TAG_COMPOUND));
 		if (tag.contains("Aims"))
@@ -1280,8 +1709,14 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 
 	/* ------------------------------------------------------------------ fire missions */
 
-	/** Highest level a Create redstone link can carry; a mission opens the fire channel to this. */
-	private static final int MISSION_FIRE_SIGNAL = 15;
+	/**
+	 * What opens a mount's fire channel: the console's own transmit ceiling ({@code maxLinkLevel}). Any level
+	 * above zero is a rising edge the mount can act on, so even a ceiling of one still fires; the ceiling exists
+	 * to slow the AIM pushes, not to withhold the shot.
+	 */
+	private int fireSignal() {
+		return maxLinkLevel;
+	}
 
 	/**
 	 * Server side entry point of a fire mission: record the order, then hand a copy of it to every mount
@@ -1290,7 +1725,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	 */
 	public int addMission(double x, double y, double z) {
 		Level level = getLevel();
-		if (level == null || level.isClientSide())
+		if (level == null || level.isClientSide() || headAimOwner != null)
 			return 0;
 		FireMission mission = new FireMission(x, y, z);
 		if (!mission.isFinite())
@@ -1339,7 +1774,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	 * assembled, its breech able to fire the next shot, the order solvable from where the gun stands. A mount
 	 * that is merely busy - no assembled cannon yet, no shootable round, still reloading - ages the order by
 	 * one check interval, and the order leaves that queue once it has waited the window configured on the
-	 * target page. An order this mount cannot solve at all (out of reach, or the barrel's path is blocked) is
+	 * config page. An order this mount cannot solve at all (out of reach, or the barrel's path is blocked) is
 	 * dropped on the spot: waiting cannot make an impossible shot possible, and holding the queue open for it
 	 * would starve the orders behind it. A mount that passes gets the row armed onto the order's aim, and once
 	 * the drive loop reports the row inside the deadband the order's shot goes out over the wireless fire
@@ -1403,7 +1838,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			}
 			if (aimOnTarget[slot] && !entry.fired) {
 				entry.fired = true;
-				setChannelStrength(level, slot, AdvancedCannonMountBlockEntity.CH_FIRE, MISSION_FIRE_SIGNAL);
+				setChannelStrength(level, slot, AdvancedCannonMountBlockEntity.CH_FIRE, fireSignal());
 				changed = true;
 			}
 		}
@@ -1496,7 +1931,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	}
 
 	/**
-	 * Server side: the window entered on the target page. It is read live by the check loop rather than
+	 * Server side: the window entered on the config page. It is read live by the check loop rather than
 	 * stamped onto orders, so lengthening it also rescues the orders already waiting and shortening it lets
 	 * the oldest of them go on the next check.
 	 */
@@ -1515,6 +1950,46 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		if (seconds < MIN_MISSION_WAIT_SECONDS)
 			return MIN_MISSION_WAIT_SECONDS;
 		return seconds > MAX_MISSION_WAIT_SECONDS ? MAX_MISSION_WAIT_SECONDS : seconds;
+	}
+
+	/** Both sides: the highest redstone level this console transmits. */
+	public int maxLinkLevel() {
+		return maxLinkLevel;
+	}
+
+	/**
+	 * Server side: the transmit ceiling entered on the config page. It applies live rather than from the next
+	 * recompute, because a channel that is ALREADY holding a level the console has just disallowed would keep
+	 * driving the gun at that strength until the controller happened to pick a lower one.
+	 */
+	public void setMaxLinkLevel(int level) {
+		int clamped = clampMaxLinkLevel(level);
+		if (clamped == maxLinkLevel)
+			return;
+		maxLinkLevel = clamped;
+		/*
+		 * The controller's own memory is trimmed with it: the anti-windup test asks whether a row already
+		 * asks for everything the console may send, and a stale level above the ceiling would read as
+		 * saturated when it is not.
+		 */
+		for (int i = 0; i < heldLevel.length; i++)
+			if (heldLevel[i] > maxLinkLevel)
+				heldLevel[i] = maxLinkLevel;
+		Level world = getLevel();
+		if (world != null && !world.isClientSide())
+			for (int slot = 0; slot < SLOTS; slot++)
+				for (int channel = 0; channel < CHANNELS_PER_SLOT; channel++)
+					if (channelStrength[slot][channel] > maxLinkLevel)
+						/* Publishing through setChannelStrength also refreshes Create's link network. */
+						setChannelStrength(world, slot, channel, maxLinkLevel);
+		setChanged();
+		sendData();
+	}
+
+	private static int clampMaxLinkLevel(int level) {
+		if (level < MIN_MAX_LINK_LEVEL)
+			return MIN_MAX_LINK_LEVEL;
+		return level > MAX_MAX_LINK_LEVEL ? MAX_MAX_LINK_LEVEL : level;
 	}
 
 	/** Client view: the impact point of this mount's front order. */
@@ -2051,8 +2526,13 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			MissionEntry order = missionQueues[slot].peek();
 			if (order != null && order.active)
 				continue;
+			/*
+			 * Head aiming never fires either. A spotter's crosshair is not an order, and opening the fire channel
+			 * every time a bore happens to line up with it would empty the breeches at whatever crossed the sight
+			 * line, which is not what holding a designator in the off hand asked for.
+			 */
 			setChannelStrength(level, slot, AdvancedCannonMountBlockEntity.CH_FIRE,
-				aimOnTarget[slot] && emittedLinkPower > 0 ? emittedLinkPower : 0);
+				aimOnTarget[slot] && headAimOwner == null && emittedLinkPower > 0 ? emittedLinkPower : 0);
 		}
 	}
 
@@ -2099,12 +2579,12 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		/*
 		 * Anti-windup in two parts: an integral that has ended up on the other side of the error is a record
 		 * of an aim already crossed, so it is discarded rather than carried, and the accumulation stops while
-		 * the row already asks for everything a link packet can carry, because extra error there is only
+		 * the row already asks for everything this console is allowed to send, because extra error there is only
 		 * debt waiting to unwind.
 		 */
 		if (Math.signum(integral[i]) != Math.signum(error))
 			integral[i] = 0.0;
-		if (heldLevel[i] < 15)
+		if (heldLevel[i] < maxLinkLevel)
 			integral[i] = Mth.clamp(integral[i] + error, -AIM_I_MAX_DEG_TICK, AIM_I_MAX_DEG_TICK);
 		/*
 		 * Damping only while the error is closing. A derivative that widens it is the re-solve moving the
@@ -2117,7 +2597,11 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			heldLevel[i] = 0;
 			return 0;
 		}
-		int wanted = Math.min(15, Math.max(1, (int) Math.ceil(authority / DEGREES_PER_LINK_LEVEL)));
+		/*
+		 * The console's ceiling, not fifteen: a spotter who wants the gun to creep onto aim sets the ceiling
+		 * lower on the config page, and every level above it is simply not sendable.
+		 */
+		int wanted = Math.min(maxLinkLevel, Math.max(1, (int) Math.ceil(authority / DEGREES_PER_LINK_LEVEL)));
 		/*
 		 * Drop a level only once the authority is a good fraction below that level's own boundary. A single
 		 * tick of the smoothed rate must not be able to flip the transmitted strength back and forth.

@@ -163,6 +163,18 @@ public class TargetDesignatorItem extends Item {
 			}
 			return InteractionResultHolder.fail(stack);
 		}
+		/*
+		 * A BOUND designator in the off hand is the trigger for head aiming, not a scope: raising the zoom there
+		 * would hide the very sight line the console is following behind the vignette, and a middle click inside
+		 * that scope would try to file an order on a console that is being pointed by hand. Unbound still scopes
+		 * exactly as vanilla's spyglass does, so an off-hand designator that binds to nothing is only a glass.
+		 */
+		if (hand == InteractionHand.OFF_HAND && bindingOf(stack) != null) {
+			if (!level.isClientSide)
+				player.displayClientMessage(
+						Component.translatable("item.cbc_firecontrol.target_designator.offhand_head_aim"), true);
+			return InteractionResultHolder.fail(stack);
+		}
 		player.playSound(SoundEvents.SPYGLASS_USE, 1.0F, 1.0F);
 		player.awardStat(Stats.ITEM_USED.get(this));
 		return ItemUtils.startUsingInstantly(level, player, hand);
@@ -222,6 +234,10 @@ public class TargetDesignatorItem extends Item {
 				tooltip.add(Component.translatable("item.cbc_firecontrol.target_designator.stored_target",
 						Math.round(calculator.targetX()), Math.round(calculator.targetY()),
 						Math.round(calculator.targetZ())).withStyle(ChatFormatting.GRAY));
+			// Somebody holding the console by head changes what this designator can be asked to do, so say so.
+			if (calculator.headAimHeldOnClient())
+				tooltip.add(Component.translatable("cbc_firecontrol.calculator.head_aim.held_by",
+						calculator.headAimOwnerName()).withStyle(ChatFormatting.GOLD));
 			/*
 			 * What the bound console can shoot at, which is also the bound on a middle click: when the scope
 			 * line finds nothing inside the terrain the client has simulated, the console loads along that line
@@ -233,6 +249,9 @@ public class TargetDesignatorItem extends Item {
 						String.format("%.0f", range)).withStyle(ChatFormatting.DARK_AQUA));
 		}
 		tooltip.add(Component.translatable("item.cbc_firecontrol.target_designator.usage_note").withStyle(ChatFormatting.GRAY));
+		// The off-hand mode is the other half of what a bound designator does, so it belongs in the same tooltip.
+		tooltip.add(Component.translatable("item.cbc_firecontrol.target_designator.head_aim_note")
+				.withStyle(ChatFormatting.DARK_AQUA));
 		tooltip.add(Component.translatable("item.cbc_firecontrol.target_designator.range_note")
 				.withStyle(ChatFormatting.DARK_GRAY));
 	}

@@ -8,13 +8,15 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 
 /**
- * Client -&gt; server: the fire-mission settings of the Trajectory Calculator at {@code pos}.
+ * Client -&gt; server: the configuration page of the Trajectory Calculator at {@code pos}.
  *
- * <p>One value today: how long a mount may hold an order it cannot take, in seconds. The server clamps it to the
- * bounds the target page itself offers, so a packet from a modified client cannot set an unreasonable window.
- * Sent once per commit (Enter in the field or the SET button), never per keystroke.
+ * <p>Two values: how long a mount may hold an order it cannot take, in seconds, and the highest redstone level
+ * the console may transmit. The server clamps both to the bounds the config page itself offers, so a packet from
+ * a modified client can neither open an arbitrarily long window nor push a mount radio harder than its bounds
+ * allow. Sent once per commit (Enter in the field or the SET button), never per keystroke.
  */
-public record CalculatorSettingsPayload(BlockPos pos, int missionWaitSeconds) implements CustomPacketPayload {
+public record CalculatorSettingsPayload(BlockPos pos, int missionWaitSeconds, int maxLinkLevel)
+		implements CustomPacketPayload {
 
 	public static final Type<CalculatorSettingsPayload> TYPE =
 			new Type<>(ResourceLocation.fromNamespaceAndPath(CBCFireControl.MODID, "calculator_settings"));
@@ -24,7 +26,7 @@ public record CalculatorSettingsPayload(BlockPos pos, int missionWaitSeconds) im
 				@Override
 				public CalculatorSettingsPayload decode(FriendlyByteBuf buf) {
 					return new CalculatorSettingsPayload(new BlockPos(buf.readInt(), buf.readInt(), buf.readInt()),
-							buf.readInt());
+							buf.readInt(), buf.readInt());
 				}
 
 				@Override
@@ -33,6 +35,7 @@ public record CalculatorSettingsPayload(BlockPos pos, int missionWaitSeconds) im
 					buf.writeInt(p.pos().getY());
 					buf.writeInt(p.pos().getZ());
 					buf.writeInt(p.missionWaitSeconds());
+					buf.writeInt(p.maxLinkLevel());
 				}
 			};
 

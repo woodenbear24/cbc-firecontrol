@@ -24,8 +24,8 @@ import net.minecraft.network.chat.Component;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
- * The target page: the absolute world coordinate the console solves for, entered as three numbers and committed as
- * one order.
+ * The config page: the absolute world coordinate the console solves for, entered as three numbers and committed as
+ * one order, plus the console's two output settings under it.
  *
  * <p>The entered target goes to the server once per commit rather than per keystroke: a {@link
  * CalculatorTargetPayload} is sent on Enter in a field or on SET, and the server writes it into the block entity,
@@ -38,18 +38,21 @@ import net.neoforged.neoforge.network.PacketDistributor;
  * so a resized window would leave them at the old panel position otherwise. Re-seeding from the block entity on
  * entry is also what makes reopening the console never suggest a new shot.
  *
- * <p>The page also carries the fire-mission wait window - the one setting the console exposes, how long a mount
- * may hold an order it cannot take yet - in a second strip under the target entry. It belongs here rather than on
- * a page of its own because it answers the same question the rows below the target do: what becomes of an order
- * once this console has solved it. One number alone did not justify a sixth page, and a page that held only it
- * left that number's effect a click away from the readouts that show it happening.
+ * <p>The page is also where the console's two output settings live: how long a mount may hold an order it cannot
+ * take yet, and the highest redstone level the console is allowed to transmit. They belong here rather than on a
+ * page of their own because they answer the same question the rows below the target do: what becomes of an order
+ * once this console has solved it. Neither number alone justified a sixth page, and a page holding only them
+ * would leave their effect a click away from the readouts that show it happening - which is why the page reads
+ * as config rather than target.
  */
-public class CalculatorTargetTab extends CalculatorTab {
+public class CalculatorConfigTab extends CalculatorTab {
 
 	/** Optional sign, up to 12 integer digits, at most three decimals: a block coordinate, not a formula. */
 	private static final Pattern COORDINATE = Pattern.compile("-?\\d{0,12}(\\.\\d{0,3})?");
 	/** Whole seconds, at most two digits: the server clamps the value, so the field only needs to be numeric. */
 	private static final Pattern SECONDS = Pattern.compile("\\d{0,2}");
+	/** A redstone level: one or two digits whose value is at most fifteen, which is all a link can carry. */
+	private static final Pattern LINK_LEVEL = Pattern.compile("\\d{0,2}");
 
 	private EditBox targetX;
 	private EditBox targetY;
@@ -62,9 +65,13 @@ public class CalculatorTargetTab extends CalculatorTab {
 	private EditBox waitField;
 	private Button waitSetButton;
 	private boolean waitValid;
+	/** The transmit ceiling of the third block, with the same shape and its own parse state. */
+	private EditBox signalField;
+	private Button signalSetButton;
+	private boolean signalValid;
 
-	public CalculatorTargetTab() {
-		super(TrajectoryCalculatorMenu.TAB_TARGET, "cbc_firecontrol.calculator.tab.target");
+	public CalculatorConfigTab() {
+		super(TrajectoryCalculatorMenu.TAB_CONFIG, "cbc_firecontrol.calculator.tab.config");
 	}
 
 	@Override
@@ -126,6 +133,34 @@ public class CalculatorTargetTab extends CalculatorTab {
 				.build();
 		refreshWaitValidity();
 
+		/*
+		 * The third block, built exactly like the second: one field, one commit button, its own parse state, its
+		 * tooltip naming the server's bounds. It has no explanation lines because the panel ends right under it,
+		 * so the ceiling's effect on the gun's speed is said in the tooltip instead.
+		 */
+		int signalY = screen.panelTop() + TrajectoryCalculatorMenu.TARGET_SIGNAL_STRIP_Y;
+		signalField = new EditBox(screen.consoleFont(),
+				screen.panelLeft() + TrajectoryCalculatorMenu.TARGET_SIGNAL_FIELD_X, signalY,
+				TrajectoryCalculatorMenu.TARGET_SIGNAL_FIELD_W, TrajectoryCalculatorMenu.TARGET_FIELD_H,
+				Component.translatable("cbc_firecontrol.calculator.settings.signal"));
+		signalField.setFilter(text -> text.isEmpty() || LINK_LEVEL.matcher(text).matches());
+		signalField.setMaxLength(2);
+		signalField.setTextColor(ConsoleTheme.FIELD_TEXT);
+		signalField.setResponder(ignored -> refreshSignalValidity());
+		signalField.setTooltip(Tooltip.create(Component.translatable(
+				"cbc_firecontrol.calculator.settings.signal_hint",
+				TrajectoryCalculatorBlockEntity.MIN_MAX_LINK_LEVEL,
+				TrajectoryCalculatorBlockEntity.MAX_MAX_LINK_LEVEL)));
+		seedSignalFromCalculator(screen);
+		signalSetButton = Button.builder(Component.translatable("cbc_firecontrol.calculator.settings.set"),
+				button -> commitSignal(screen))
+				.bounds(screen.panelLeft() + TrajectoryCalculatorMenu.TARGET_SIGNAL_SET_X, signalY,
+						TrajectoryCalculatorMenu.TARGET_SIGNAL_SET_W, TrajectoryCalculatorMenu.TARGET_FIELD_H)
+				.tooltip(Tooltip.create(Component.translatable(
+						"cbc_firecontrol.calculator.settings.signal_set_hint")))
+				.build();
+		refreshSignalValidity();
+
 		List<GuiEventListener> widgets = new ArrayList<>();
 		widgets.add(targetX);
 		widgets.add(targetY);
@@ -135,6 +170,8 @@ public class CalculatorTargetTab extends CalculatorTab {
 		widgets.add(aimButton);
 		widgets.add(waitField);
 		widgets.add(waitSetButton);
+		widgets.add(signalField);
+		widgets.add(signalSetButton);
 		// SET is enabled only when all three fields parse, so a half-entered coordinate cannot be committed.
 		refreshFieldValidity();
 		return widgets;
@@ -168,10 +205,10 @@ public class CalculatorTargetTab extends CalculatorTab {
 	}
 
 	/**
-	 * Follow the stored target and window while their fields are not being edited, so another player (or a
-	 * redstone-driven change) that moves either is reflected here instead of the fields quietly disagreeing with
-	 * the readouts. Each block guards only its own fields: typing a coordinate must not freeze the window beside
-	 * it, or the page would show a value the mounts have already moved past.
+	 * Follow the stored target and the two settings while their fields are not being edited, so another player
+	 * (or a redstone-driven change) that moves one of them is reflected here instead of the fields quietly
+	 * disagreeing with the readouts. Each block guards only its own fields: typing a coordinate must not freeze
+	 * the window beside it, or the page would show a value the mounts have already moved past.
 	 */
 	@Override
 	protected void ticked(TrajectoryCalculatorScreen screen) {
@@ -196,6 +233,12 @@ public class CalculatorTargetTab extends CalculatorTab {
 				waitField.setValue(stored);
 			refreshWaitValidity();
 		}
+		if (!signalField.isFocused()) {
+			String ceiling = String.valueOf(calculator.maxLinkLevel());
+			if (!signalField.getValue().equals(ceiling))
+				signalField.setValue(ceiling);
+			refreshSignalValidity();
+		}
 	}
 
 	@Override
@@ -208,6 +251,10 @@ public class CalculatorTargetTab extends CalculatorTab {
 		}
 		if (waitField.isFocused()) {
 			commitWait(screen);
+			return true;
+		}
+		if (signalField.isFocused()) {
+			commitSignal(screen);
 			return true;
 		}
 		return false;
@@ -234,6 +281,13 @@ public class CalculatorTargetTab extends CalculatorTab {
 		int waitBottom = screen.panelTop() + TrajectoryCalculatorMenu.TARGET_WAIT_STRIP_BOTTOM;
 		graphics.fill(x + 8, waitTop, x + w - 8, waitBottom, ConsoleTheme.TARGET_BG);
 		graphics.fill(x + 8, waitBottom - 1, x + w - 8, waitBottom, ConsoleTheme.PANEL_EDGE);
+
+		/* The ceiling block's band, drawn the same way again - three inputs, one instrument. */
+		int signalTop = screen.panelTop() + TrajectoryCalculatorMenu.TARGET_SIGNAL_STRIP_Y
+				- TrajectoryCalculatorMenu.TARGET_SIGNAL_STRIP_PAD_TOP;
+		int signalBottom = screen.panelTop() + TrajectoryCalculatorMenu.TARGET_SIGNAL_STRIP_BOTTOM;
+		graphics.fill(x + 8, signalTop, x + w - 8, signalBottom, ConsoleTheme.TARGET_BG);
+		graphics.fill(x + 8, signalBottom - 1, x + w - 8, signalBottom, ConsoleTheme.PANEL_EDGE);
 	}
 
 	@Override
@@ -293,6 +347,26 @@ public class CalculatorTargetTab extends CalculatorTab {
 					TrajectoryCalculatorMenu.TARGET_WAIT_LABEL_X,
 					noteY + (line - 1) * TrajectoryCalculatorMenu.TARGET_WAIT_NOTE_LINE_H,
 					ConsoleTheme.TEXT_SECONDARY, false);
+
+		/*
+		 * The ceiling block under the notes: its own heading, the field's label and the echo of what the console
+		 * actually sends. The echo is the stored ceiling rather than the typed text, because the number that
+		 * matters is the one the mounts are being driven under right now.
+		 */
+		graphics.drawString(font, Component.translatable("cbc_firecontrol.calculator.settings.signal_label"),
+				8, TrajectoryCalculatorMenu.TARGET_SIGNAL_HEADER_Y, ConsoleTheme.HEADER_TEXT, false);
+		int signalLabelY = TrajectoryCalculatorMenu.TARGET_SIGNAL_STRIP_Y + 6;
+		graphics.drawString(font, Component.translatable("cbc_firecontrol.calculator.settings.signal"),
+				TrajectoryCalculatorMenu.TARGET_SIGNAL_LABEL_X, signalLabelY, ConsoleTheme.CHANNEL_LABEL, false);
+		int ceiling = calculator == null
+				? TrajectoryCalculatorBlockEntity.DEFAULT_MAX_LINK_LEVEL
+				: calculator.maxLinkLevel();
+		graphics.drawString(font, fit(font,
+				Component.translatable("cbc_firecontrol.calculator.settings.signal_current",
+						String.valueOf(ceiling),
+						String.valueOf(TrajectoryCalculatorBlockEntity.MAX_MAX_LINK_LEVEL)),
+				TrajectoryCalculatorMenu.TARGET_SIGNAL_ECHO_W),
+				TrajectoryCalculatorMenu.TARGET_SIGNAL_ECHO_X, signalLabelY, ConsoleTheme.COLOR_STALLED, false);
 	}
 
 	private void refreshFieldValidity() {
@@ -334,11 +408,46 @@ public class CalculatorTargetTab extends CalculatorTab {
 			waitSetButton.active = waitValid;
 	}
 
+	/**
+	 * The console's stored ceiling, not the typed text: reopening the page must show what the mounts are actually
+	 * being driven under, and a half-entered number must never look like a limit that is in force.
+	 */
+	private void seedSignalFromCalculator(TrajectoryCalculatorScreen screen) {
+		TrajectoryCalculatorBlockEntity calculator = calculator(screen);
+		signalField.setValue(calculator == null
+				? String.valueOf(TrajectoryCalculatorBlockEntity.DEFAULT_MAX_LINK_LEVEL)
+				: String.valueOf(calculator.maxLinkLevel()));
+	}
+
+	private void refreshSignalValidity() {
+		signalValid = parseLevel(signalField.getValue()) != null;
+		signalField.setTextColor(signalValid ? ConsoleTheme.FIELD_TEXT : ConsoleTheme.FIELD_TEXT_INVALID);
+		if (signalSetButton != null)
+			signalSetButton.active = signalValid;
+	}
+
 	private static Integer parseSeconds(String text) {
 		if (text == null || text.isEmpty() || !SECONDS.matcher(text).matches())
 			return null;
 		try {
 			return Integer.parseInt(text);
+		} catch (NumberFormatException e) {
+			return null;
+		}
+	}
+
+	/**
+	 * A link level is zero to two digits, and the console accepts none of those outside its bounds: zero would
+	 * silence a fire pulse rather than slow the gun, so the field rejects it and the SET button stays dark.
+	 */
+	private static Integer parseLevel(String text) {
+		if (text == null || text.isEmpty() || !LINK_LEVEL.matcher(text).matches())
+			return null;
+		try {
+			int level = Integer.parseInt(text);
+			return level < TrajectoryCalculatorBlockEntity.MIN_MAX_LINK_LEVEL
+					|| level > TrajectoryCalculatorBlockEntity.MAX_MAX_LINK_LEVEL
+					? null : level;
 		} catch (NumberFormatException e) {
 			return null;
 		}
@@ -355,7 +464,41 @@ public class CalculatorTargetTab extends CalculatorTab {
 			refreshWaitValidity();
 			return;
 		}
-		PacketDistributor.sendToServer(new CalculatorSettingsPayload(menu(screen).getCalculatorPos(), seconds));
+		/*
+		 * One packet carries both settings, so the other travels as what the console already holds rather than as
+		 * whatever happens to be typed in its field: a half-entered ceiling must not ride along on a window
+		 * commit and silently become the limit the mounts are driven under.
+		 */
+		PacketDistributor.sendToServer(new CalculatorSettingsPayload(menu(screen).getCalculatorPos(), seconds,
+				storedCeiling(screen)));
+	}
+
+	/**
+	 * Commit the typed ceiling, or nothing at all. Lowering it takes effect at once on the server, including on
+	 * the channels already transmitting: a row that was pushing at fifteen now pushes at the new ceiling on the
+	 * same tick, so a gun mid-slew simply turns slower from there.
+	 */
+	private void commitSignal(TrajectoryCalculatorScreen screen) {
+		Integer level = parseLevel(signalField.getValue());
+		if (level == null) {
+			refreshSignalValidity();
+			return;
+		}
+		TrajectoryCalculatorBlockEntity calculator = calculator(screen);
+		int seconds = calculator == null
+				? TrajectoryCalculatorBlockEntity.DEFAULT_MISSION_WAIT_SECONDS
+				: calculator.missionWaitSeconds();
+		PacketDistributor.sendToServer(
+				new CalculatorSettingsPayload(menu(screen).getCalculatorPos(), seconds, level));
+	}
+
+	/**
+	 * The ceiling the console holds now, which is what a commit of the OTHER setting must send back unchanged.
+	 */
+	private int storedCeiling(TrajectoryCalculatorScreen screen) {
+		TrajectoryCalculatorBlockEntity calculator = calculator(screen);
+		return calculator == null ? TrajectoryCalculatorBlockEntity.DEFAULT_MAX_LINK_LEVEL
+				: calculator.maxLinkLevel();
 	}
 
 	/** Commit what is typed, in full, or not at all - a half-entered target is never sent. */

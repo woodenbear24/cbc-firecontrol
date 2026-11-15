@@ -100,7 +100,8 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	 * gunner is not looking at, and a filter slot that is not drawn can never be clicked by coincidence.
 	 */
 	public static final int TAB_LINKS = 0;
-	public static final int TAB_TARGET = 1;
+	/** The config page: the target to solve for, and the console's two output settings. */
+	public static final int TAB_CONFIG = 1;
 	public static final int TAB_CHANNELS = 2;
 	public static final int TAB_STATUS = 3;
 	public static final int TAB_TASKS = 4;
@@ -129,11 +130,11 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	public static final int CHANNEL_SYNC_W = 96;
 	public static final int CHANNEL_SYNC_H = 18;
 	/*
-	 * The target page's second block: the fire-mission wait window, entered as whole seconds. One field and one
+	 * The config page's second block: the fire-mission wait window, entered as whole seconds. One field and one
 	 * commit button in a recessed strip, the live echo of what the console holds beside them, and three
 	 * explanation lines under the strip - the same strip shape the target entry uses above it, so the console
 	 * reads as one instrument. The page has no readout rows, so everything under the target strip belongs to
-	 * this block; the links page is what uses that band of the panel for its rows.
+	 * these blocks; the links page is what uses that band of the panel for its rows.
 	 */
 	public static final int TARGET_WAIT_HEADER_Y = TARGET_STRIP_BOTTOM + 4;
 	public static final int TARGET_WAIT_STRIP_Y = TARGET_WAIT_HEADER_Y + 15;
@@ -155,6 +156,25 @@ public class TrajectoryCalculatorMenu extends AbstractContainerMenu {
 	 */
 	public static final int TARGET_WAIT_NOTE_Y = TARGET_WAIT_STRIP_BOTTOM + 8;
 	public static final int TARGET_WAIT_NOTE_LINE_H = 10;
+	/*
+	 * The config page's third block: the ceiling on the redstone level the console transmits. The same strip
+	 * shape as the window above it - one field, one commit button, the live echo beside them - but no
+	 * explanation lines: this block ends at the panel's bottom edge, so its tooltip carries the whole rule.
+	 */
+	public static final int TARGET_SIGNAL_HEADER_Y = TARGET_WAIT_NOTE_Y + 3 * TARGET_WAIT_NOTE_LINE_H + 5;
+	public static final int TARGET_SIGNAL_STRIP_Y = TARGET_SIGNAL_HEADER_Y + 13;
+	public static final int TARGET_SIGNAL_LABEL_X = 18;
+	public static final int TARGET_SIGNAL_FIELD_X = 62;
+	public static final int TARGET_SIGNAL_FIELD_W = 34;
+	public static final int TARGET_SIGNAL_SET_X = 100;
+	public static final int TARGET_SIGNAL_SET_W = 44;
+	public static final int TARGET_SIGNAL_ECHO_X = 152;
+	public static final int TARGET_SIGNAL_ECHO_W = PANEL_WIDTH - 16 - TARGET_SIGNAL_ECHO_X;
+	/** The recessed band behind the field reaches this far above and below it. */
+	public static final int TARGET_SIGNAL_STRIP_PAD_TOP = 5;
+	public static final int TARGET_SIGNAL_STRIP_PAD_BOTTOM = 8;
+	public static final int TARGET_SIGNAL_STRIP_BOTTOM = TARGET_SIGNAL_STRIP_Y - TARGET_SIGNAL_STRIP_PAD_TOP
+			+ TARGET_FIELD_H + TARGET_SIGNAL_STRIP_PAD_BOTTOM;
 	/*
 	 * The tasks page's board: six columns, one queue each - the console's own queue first, then one per mount row,
 	 * so a column answers "what is this mount working on" instead of repeating the row readouts. Rows are entry
