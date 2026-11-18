@@ -19,8 +19,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Places the external view's camera: keeps the orbit distance out of vanilla's collision walk, lifts the camera off
- * the vehicle's pitch axis, and drives the orbit pitch from the mouse alone so the hull's own pitch cannot swing it.
+ * Places the external view's camera: keeps the orbit distance out of vanilla's collision walk, and puts the eye
+ * off the orbit axis and around the vehicle so the craft holds a constant band in the frame at every zoom.
  *
  * <p>Why the event override alone is not enough: {@code Camera#setup} feeds the distance that
  * {@code CalculateDetachedCameraDistanceEvent} produced into {@code Camera#getMaxZoom}, and that walk is where
@@ -42,20 +42,20 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * for its own camera types, so whichever injector applies first the other stays harmless, and skipping the body
  * cannot leave Sable's pose stack unbalanced because its tail pop is guarded by its own pushed flag.
  *
- * <p>Why the position has to be rewritten rather than only the distance: {@code camera.camera_rotation.EntityMixin}
- * rotates the entity's view vector by the sub-level pose ({@code Pose3dc#transformNormal} on the ship's
- * {@code logicalPose}), which is how hull pitch and roll reach a camera that vanilla would otherwise drive from the
- * mouse. So the orbit direction is rebuilt from the camera's own yaw plus {@code LocalPlayer#getXRot()} - the raw
- * mouse pitch - and the offset upward is applied along <b>world</b> Y, never along the tilted camera up. That is the
- * whole of the decoupling: whatever the hull does, the camera keeps the elevation you asked for, and being off the
- * axis is what makes the pulled-back distance read as a view of the ship instead of a graze across the deck.
+ * <p>Why the position has to be rewritten rather than only the distance: the orbit has to turn around the vehicle
+ * rather than around the sailor standing on it, and it can only do that coherently if it is built from the angles
+ * the lens actually renders with, so the placement is rebuilt from {@code this.xRot}/{@code this.yRot}. The
+ * rotation is deliberately not written: vanilla drives the detached camera from the player's interpolated view and
+ * Sable maps that through the ship's frame, so forcing our own angles both inverted the mouse controls and pinned
+ * the frame to the vehicle's heading. The offset off the axis runs along the camera's own up - perpendicular to the
+ * lens, never along world Y - which puts the vehicle at a constant angle below the centre of the frame whatever the
+ * pitch is, and being off the axis is what makes the pulled-back distance read as a view of the ship instead of a
+ * graze across the deck.
  *
- * <p>The point the orbit swings around is {@link ExternalViewClientState#orbitPivot}: the player's eye while the
- * vehicle is on the ground or in the water, sliding onto the vehicle box's centre as it climbs. That is the War
- * Thunder shape for an airborne craft - the whole vehicle stays framed as it pitches and rolls instead of the
- * camera orbiting whichever corner of the deck the player happens to stand on - and it also makes the lift
- * meaningful: the sight line crosses the pivot's plane exactly {@code lift} above it, so the airborne lift is
- * measured to the box's top and the view goes <em>over</em> the craft rather than through it.
+ * <p>The pivot is {@link ExternalViewClientState#orbitPivot}: the vehicle's own centre when the view can place it
+ * in the world, the rider eye when it cannot. That is the War Thunder shape - the craft stays framed as it pitches
+ * and rolls, and a pivot fixed to the vehicle is what keeps it in the band while the wheel zoom changes the orbit
+ * radius.
  */
 @Mixin(Camera.class)
 public abstract class CameraMaxZoomMixin {
@@ -68,9 +68,6 @@ public abstract class CameraMaxZoomMixin {
 
 	@Shadow
 	protected abstract void setPosition(Vec3 position);
-
-	@Shadow
-	protected abstract void setRotation(float xRot, float yRot);
 
 	/**
 	 * TEMPORARY, alongside {@code CBCFireControl.DEBUG_CAMERA}: the placement runs every rendered frame, and a log
@@ -121,20 +118,18 @@ public abstract class CameraMaxZoomMixin {
 		// The lift is a fraction of the orbit, so the band angle is the same at every zoom: wheel zoom changes
 		// how big the vehicle is in the frame, not where it sits in it.
 		float orbit = distance;
-		// Entity#calculateViewVector (L1616-1624) inlined on purpose: that method is exactly what Sable
-		// redirects to fold the sub-level pose into the view vector, so the orbit must not call it. The
-		// rotation is forced to the interpolated mouse view first - on a Sable sub-level the camera's own
-		// xRot otherwise carries the hull pitch - and the placement is then built from whatever the camera
-		// field actually ends up holding, so the orbit and the lens come from the SAME angles and cannot
-		// disagree. That disagreement is what made the vehicle fly around the screen while the mouse moved:
-		// the orbit was sized from the mouse pitch while the lens rendered something else. Interpolated
-		// (getViewXRot/getViewYRot) is still 1:1 with the mouse - the same value sampled once a frame like
-		// vanilla does, with no filter, no easing and no dead zone.
-		float mousePitch = mc.player.getViewXRot(partialTick);
-		float mouseYaw = mc.player.getViewYRot(partialTick);
-		setRotation(mousePitch, mouseYaw);
+		// Entity#calculateViewVector (L1616-1624) inlined on purpose: that method is exactly what Sable redirects
+		// to fold the sub-level pose into the view vector, so the orbit must not call it. The rotation is NOT
+		// written here: vanilla drives the detached camera from the player's own interpolated view and Sable maps
+		// that through the ship's frame, so writing our own angles is what inverted the mouse controls and pinned
+		// the frame to the vehicle's direction. The view has to follow the mouse, not the hull, so the camera is
+		// left alone and the placement is built from whatever its fields actually hold. Orbit and lens then come
+		// from the SAME angles and cannot disagree - that disagreement is what made the vehicle fly around the
+		// screen while the mouse moved.
 		float pitch = this.xRot;
 		float yaw = this.yRot;
+		float mousePitch = mc.player.getViewXRot(partialTick);
+		float mouseYaw = mc.player.getViewYRot(partialTick);
 		float pitchRad = pitch * Mth.DEG_TO_RAD;
 		float yawRad = -yaw * Mth.DEG_TO_RAD;
 		float horizontal = Mth.cos(pitchRad);
@@ -149,8 +144,8 @@ public abstract class CameraMaxZoomMixin {
 				? new Vec3(1.0D, 0.0D, 0.0D)
 				: new Vec3(-forward.x * forward.y / lateral, lateral, -forward.z * forward.y / lateral);
 		Vec3 wanted = pivot.add(forward.scale(-orbit)).add(frameUp.scale(lift));
-		// Placed directly, not eased: the orbit answers the pivot and the mouse on this frame, so there is
-		// no lag that would read as a sensitivity that changes with distance.
+		// Placed directly, not eased: the orbit answers the pivot and the view the camera itself carries,
+		// on this frame, so there is no lag that would read as a sensitivity that changes with distance.
 		setPosition(wanted);
 
 		if (CBCFireControl.DEBUG_CAMERA && ++placementLogTicks % 60 == 0) {
