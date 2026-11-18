@@ -110,50 +110,59 @@ public abstract class CameraMaxZoomMixin {
 		if (Float.isNaN(distance))
 			return;
 
-		Vec3 pivot = ExternalViewClientState.orbitPivot(mc.player.getEyePosition(partialTick), partialTick);
-		float lift = ExternalViewClientState.orbitLift(distance, pivot, partialTick);
-		// The lift and the distance are solved together: dividing the lift by the framing ratio pulls the camera back
-		// exactly as far as it goes up, so the vehicle keeps the same band of the screen instead of sliding up it as
-		// the clearance requirement grows.
-		float orbit = ExternalViewClientState.orbitDistance(distance, lift);
-
-		// Entity#calculateViewVector (L1616-1624) inlined on purpose: that method is exactly what Sable redirects to
-		// fold the sub-level pose into the view vector, so calling it would put hull pitch straight back into the
-		// orbit. The yaw stays the camera's own, which keeps whatever yaw framing the ship contributes; the pitch is
-		// the player's damped look pitch, which never hears the hull at all.
-		float pitch = ExternalViewClientState.smoothedPitch();
+		Vec3 eye = mc.player.getEyePosition(partialTick);
+		// The orbit turns around the vehicle itself, refreshed once a tick, so the hull rather than the player
+		// holds the screen band. Null only before the view has measured one, in which case the eye is the pivot
+		// and the framing is vanilla's own third-person shape.
+		Vec3 pivot = ExternalViewClientState.orbitPivot();
+		if (pivot == null)
+			pivot = eye;
+		float lift = ExternalViewClientState.orbitLift(distance);
+		// The lift is a fraction of the orbit, so the band angle is the same at every zoom: wheel zoom changes
+		// how big the vehicle is in the frame, not where it sits in it.
+		float orbit = distance;
+		// Entity#calculateViewVector (L1616-1624) inlined on purpose: that method is exactly what Sable
+		// redirects to fold the sub-level pose into the view vector, so the orbit must not call it. The
+		// rotation is forced to the interpolated mouse view first - on a Sable sub-level the camera's own
+		// xRot otherwise carries the hull pitch - and the placement is then built from whatever the camera
+		// field actually ends up holding, so the orbit and the lens come from the SAME angles and cannot
+		// disagree. That disagreement is what made the vehicle fly around the screen while the mouse moved:
+		// the orbit was sized from the mouse pitch while the lens rendered something else. Interpolated
+		// (getViewXRot/getViewYRot) is still 1:1 with the mouse - the same value sampled once a frame like
+		// vanilla does, with no filter, no easing and no dead zone.
+		float mousePitch = mc.player.getViewXRot(partialTick);
+		float mouseYaw = mc.player.getViewYRot(partialTick);
+		setRotation(mousePitch, mouseYaw);
+		float pitch = this.xRot;
+		float yaw = this.yRot;
 		float pitchRad = pitch * Mth.DEG_TO_RAD;
-		float yawRad = -this.yRot * Mth.DEG_TO_RAD;
+		float yawRad = -yaw * Mth.DEG_TO_RAD;
 		float horizontal = Mth.cos(pitchRad);
 		Vec3 forward = new Vec3(Mth.sin(yawRad) * horizontal, -Mth.sin(pitchRad), Mth.cos(yawRad) * horizontal);
-		// The rotation is written as well as the position. Vanilla renders through the camera's own xRot, and on a
-		// Sable sub-level that field carries the hull's pitch, so leaving it alone would aim the lens along the hull
-		// while the orbit was placed along the mouse - the vehicle would sit wherever the hull pointed rather than in
-		// the band the lift was sized for.
-		setRotation(pitch, this.yRot);
-		// Behind the pivot, exactly as vanilla's detached camera does it (`setup` calls `move(-distance, 0, 0)`):
-		// the orbit sits on the reverse of the view vector, so the vehicle stays in front of the lens.
-		Vec3 wanted = pivot.add(forward.scale(-orbit)).add(0.0D, lift, 0.0D);
-		setPosition(ExternalViewClientState.dampedPosition(wanted));
+		// Behind the pivot exactly as vanilla's detached camera does it (Camera#setup calls move with a
+		// negative distance), with the off-axis amount along the camera's own up, meaning perpendicular to
+		// the lens rather than along world Y. Measured that way the pivot sits atan(lift/orbit) below the
+		// centre of the FRAME at every pitch, so looking straight down keeps the craft in the same band
+		// instead of sliding it off the screen, which is the War Thunder framing being asked for.
+		double lateral = Math.sqrt(forward.x * forward.x + forward.z * forward.z);
+		Vec3 frameUp = lateral < 1.0E-6F
+				? new Vec3(1.0D, 0.0D, 0.0D)
+				: new Vec3(-forward.x * forward.y / lateral, lateral, -forward.z * forward.y / lateral);
+		Vec3 wanted = pivot.add(forward.scale(-orbit)).add(frameUp.scale(lift));
+		// Placed directly, not eased: the orbit answers the pivot and the mouse on this frame, so there is
+		// no lag that would read as a sensitivity that changes with distance.
+		setPosition(wanted);
 
 		if (CBCFireControl.DEBUG_CAMERA && ++placementLogTicks % 60 == 0) {
-			Vec3 eye = mc.player.getEyePosition(partialTick);
-			CBCFireControl.LOGGER.info("[cbc_firecontrol] external camera placed: damped pitch {} (mouse {}, "
-							+ "camera saw {}, hull {}), yaw {}, span distance {}, orbit {}, lift {}, screen drop {}°, "
-							+ "pivot {} blocks above eye, top {}, height {}, airborne {}, centre trusted {}, "
-							+ "probe x {} surface {}",
-					String.format("%.1f", pitch), String.format("%.1f", mc.player.getXRot()),
-					String.format("%.1f", this.xRot), String.format("%.1f", SableShipBounds.hullXRot(mc.player)),
-					String.format("%.1f", this.yRot), String.format("%.1f", distance),
+			CBCFireControl.LOGGER.info("[cbc_firecontrol] external camera placed: camera pitch {} yaw {} deg "
+					+ "(mouse {} / {} deg), hull {} deg, orbit {}, lift {}, pivot {}, band {} deg below frame "
+					+ "centre; the orbit is built from the rotation the camera itself carries",
+					String.format("%.1f", pitch), String.format("%.1f", yaw),
+					String.format("%.1f", mousePitch), String.format("%.1f", mouseYaw),
+					String.format("%.1f", SableShipBounds.hullXRot(mc.player)),
 					String.format("%.1f", orbit), String.format("%.1f", lift),
-					String.format("%.1f", Math.toDegrees(Math.atan(ExternalViewClientState.screenDropRatio()))),
-					String.format("%.1f", pivot.y - eye.y),
-					String.format("%.1f", ExternalViewClientState.vehicleTopY()),
-					String.format("%.1f", ExternalViewClientState.debugHeight()),
-					String.format("%.2f", ExternalViewClientState.lerpBlend(partialTick)),
-					ExternalViewClientState.debugCentreTrusted() ? "yes" : "NO",
-					String.format("%.1f", ExternalViewClientState.debugProbeX()),
-					String.format("%.1f", ExternalViewClientState.debugSurfaceY()));
+					ExternalViewClientState.pivotIsVehicle() ? "vehicle centre" : "rider eye",
+					String.format("%.1f", ExternalViewClientState.bandDegrees()));
 		}
 	}
 }

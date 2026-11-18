@@ -262,6 +262,73 @@ public final class SableShipBounds {
 			return 0.0F;
 		}
 	}
+	/**
+	 * (Vec3) -> Vec3 on {@code Pose3dc}: a plot-local point moved into world space. The pose maps plot-local
+	 * to world, so transforming the local origin gives the plot's world origin - the point the hull pitches
+	 * and rolls about.
+	 */
+	@Nullable
+	private static Method transformPosition;
+	/** () -> Vec3 on {@code Pose3dc}, for builds that expose the origin directly. */
+	@Nullable
+	private static Method posePosition;
+	/** The candidates are probed once against the first live pose, so a build with neither is remembered. */
+	private static boolean positionProbed;
+	/**
+	 * The hull's rotation centre in world space, or null when this Sable build exposes neither accessor or
+	 * the entity is aboard no ship.
+	 *
+	 * <p>The external orbit turns around this rather than the bounding-box centre: a box centre is
+	 * rotation-sensitive, so a rolling hull drags its own centre and the frame swims with it, while the point
+	 * a hull turns about does not translate under pitch or roll at all. That clearance is what keeps the view
+	 * steady while the ship pitches, without filtering the mouse.
+	 */
+	@Nullable
+	public static Vec3 rotationCentre(@Nullable Entity entity) {
+		if (entity == null || !ensureAvailable() || pose == null)
+			return null;
+		Object subLevel = lookup(entity);
+		if (subLevel == null)
+			return null;
+		try {
+			Object shipPose = pose.invoke(subLevel);
+			if (shipPose == null)
+				return null;
+			probePositionMethods(shipPose.getClass());
+			if (transformPosition != null) {
+				Object point = transformPosition.invoke(shipPose, Vec3.ZERO);
+				return point instanceof Vec3 v ? v : null;
+			}
+			if (posePosition != null) {
+				Object point = posePosition.invoke(shipPose);
+				return point instanceof Vec3 v ? v : null;
+			}
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return null;
+		}
+		return null;
+	}
+	private static void probePositionMethods(Class<?> poseClass) {
+		if (positionProbed)
+			return;
+		positionProbed = true;
+		try {
+			Method found = poseClass.getMethod("transformPosition", Vec3.class);
+			found.setAccessible(true);
+			transformPosition = found;
+		} catch (ReflectiveOperationException e) {
+			// No point transform on this build.
+		}
+		try {
+			Method found = poseClass.getMethod("position");
+			found.setAccessible(true);
+			posePosition = found;
+		} catch (ReflectiveOperationException e) {
+			// No direct origin accessor on this build.
+		}
+		CBCFireControl.LOGGER.info("[cbc_firecontrol] Sable rotation-centre accessors: transformPosition={}, position={}",
+				transformPosition != null, posePosition != null);
+	}
 }
 
 
