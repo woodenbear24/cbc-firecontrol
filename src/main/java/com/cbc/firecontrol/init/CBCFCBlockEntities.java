@@ -5,6 +5,7 @@ import com.cbc.firecontrol.block.entity.AdvancedCannonMountBlockEntity;
 import com.cbc.firecontrol.block.entity.TrajectoryCalculatorBlockEntity;
 import com.cbc.firecontrol.client.AdvancedCannonMountBERenderer;
 import com.cbc.firecontrol.client.AdvancedCannonMountVisual;
+import com.cbc.firecontrol.client.TrajectoryCalculatorBERenderer;
 import com.tterrag.registrate.util.entry.BlockEntityEntry;
 
 /**
@@ -40,13 +41,15 @@ public class CBCFCBlockEntities {
 					.register();
 
 	/**
-	 * Trajectory Calculator BE: 5 calculator_link slots + the server-computed firing solutions. No visual or
-	 * BE renderer is attached - the calculator is a static model already wired through blockstates, and its
-	 * output is GUI text rather than geometry.
+	 * Trajectory Calculator BE: 5 calculator_link slots + the server-computed firing solutions. No Flywheel
+	 * visual is attached (the console body is a static model wired through blockstates), but a BE renderer
+	 * is: it draws one link-card model into the rack for every slot that holds a card, so the console shows
+	 * physically what the GUI slot column holds. Everything else it reports is GUI text, not geometry.
 	 */
 	public static final BlockEntityEntry<TrajectoryCalculatorBlockEntity> TRAJECTORY_CALCULATOR_BE =
 			CBCFireControl.REGISTRATE
 					.blockEntity("trajectory_calculator", TrajectoryCalculatorBlockEntity::new)
+					.renderer(() -> TrajectoryCalculatorBERenderer::new)
 					.validBlock(CBCFCBlocks.TRAJECTORY_CALCULATOR)
 					.register();
 

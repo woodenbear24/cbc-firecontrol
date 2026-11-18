@@ -1,0 +1,25 @@
+{
+	"format_version": "1.21.6",
+	"credit": "Same as advanced_cannon_mount/advanced_cannon_mount.json but Y-flipped 8..16 for the upside-down half-slab variant (SHAPE_UPPER_HALF). Also inside the models/block/advanced_cannon_mount/ folder. Shares the plinth texture cbc_firecontrol:block/advanced_cannon_mount and the same autouv rects.",
+	"parent": "minecraft:block/block",
+	"texture_size": [32, 32],
+	"textures": {
+		"0": "cbc_firecontrol:block/advanced_cannon_mount",
+		"particle": "cbc_firecontrol:block/advanced_cannon_mount"
+	},
+	"elements": [
+		{
+			"from": [0, 8, 0],
+			"to": [16, 16, 16],
+			"shade": false,
+			"faces": {
+				"north": {"uv": [0, 8, 8, 12], "texture": "#0"},
+				"east": {"uv": [0, 8, 8, 12], "texture": "#0"},
+				"south": {"uv": [0, 8, 8, 12], "texture": "#0"},
+				"west": {"uv": [0, 8, 8, 12], "texture": "#0"},
+				"up": {"uv": [8, 0, 16, 8], "texture": "#0"},
+				"down": {"uv": [0, 8, 8, 0], "texture": "#0"}
+			}
+		}
+	]
+}

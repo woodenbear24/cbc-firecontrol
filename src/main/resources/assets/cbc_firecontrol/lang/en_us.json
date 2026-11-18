@@ -96,7 +96,7 @@
 	"cbc_firecontrol.calculator.channels": "Link channels",
 	"cbc_firecontrol.calculator.channel.filled": "Filters set: %s of %s",
 	"cbc_firecontrol.calculator.channels.sync": "SYNC",
-	"cbc_firecontrol.calculator.channels.sync_hint": "Copy the linked mounts' radio columns into this console's channels. Only what a mount states is copied; a channel configured here by hand is left alone.",
+	"cbc_firecontrol.calculator.channels.sync_hint": "Copy the linked mounts' radio columns into this console's channels. A channel is copied as a pair: a column the mount has configured replaces both of this row's filter slots, its blank half included, and a column it has not configured leaves whatever you set here by hand. Pulling a card out clears that row's channels.",
 	"cbc_firecontrol.calculator.channel.0": "Yaw +",
 	"cbc_firecontrol.calculator.channel.1": "Yaw -",
 	"cbc_firecontrol.calculator.channel.2": "Pitch +",

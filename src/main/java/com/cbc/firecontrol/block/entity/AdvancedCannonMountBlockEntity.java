@@ -76,6 +76,9 @@ import net.minecraft.world.item.ItemStack;
  *   - Kinetic pitch/yaw interfaces (pitchInterface, yawInterface)
  *   - applyRotation() logic that syncs cannonYaw/cannonPitch -> mountedContraption
  *   - disassemble(), calculateCannonStressApplied()
+ *     (calculateCannonStressApplied IS overridden here to 0: the mount's whole stress draw is pinned
+ *     to a flat 512 SU on this block entity instead of following the mounted cannon's weight times the
+ *     network's RPM, see {@link #calculateStressApplied()} and {@link #MOUNT_STRESS_SU})
  *   - Goggle tooltip via {@link #addToGoggleTooltip} (inherited, calls ExtendsCannonMount.addCannonInfoToTooltip)
  *   - Assembly exception display via getLastAssemblyException() (inherited)
  *   - Item handler / capabilities for the mounted contraption (inherited)
@@ -454,6 +457,21 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 	public static final int CH_PITCH_DOWN = 3;
 	public static final int CH_FIRE = 4;
 	public static final int WIRELESS_CHANNELS = 5;
+	/**
+	 * Sixth radio column: assembles the cannon on its rising edge and unloads it while already
+	 * assembled, exactly like the GUI's load/unload button. It is NOT included in
+	 * {@link #WIRELESS_CHANNELS}: that constant is the set of channels the trajectory calculator mirrors,
+	 * and the console's grid is five columns wide, so this channel is wired only to its own Create
+	 * redstone link and a SYNC from a calculator can never touch its items.
+	 *
+	 * <p>Set this column to an item pair that none of the five aim/fire columns uses. Create keys its
+	 * link network by the {@code Couple<Frequency>} itself, not by which column it came from, so a pair
+	 * duplicated between columns makes a transmitter on either of them drive both - a console firing
+	 * that channel would also assemble or unload the cannon.
+	 */
+	public static final int CH_ASSEMBLE = 5;
+	/** Ghost-slot columns on the mount's radio panel: the five mirrored channels plus this assembly one. */
+	public static final int RADIO_COLUMNS = WIRELESS_CHANNELS + 1;
 
 	/**
 	 * Highest signal strength a Create redstone link can carry. The received strength throttles the aim rate
@@ -461,6 +479,21 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 	 * transmitter turns proportionally slower.
 	 */
 	private static final int MAX_LINK_SIGNAL = 15;
+
+	/**
+	 * The mount's whole kinetic stress draw in SU, regardless of how fast its network is turning.
+	 *
+	 * <p>Create stores whatever {@code calculateStressApplied()} returns in the network's member map and
+	 * multiplies it by {@code |theoretical speed|} every time it sums the network
+	 * ({@code KineticNetwork.getActualStressOf}), so a member's real draw is always
+	 * {@code stored x |RPM|}. This block therefore returns {@code MOUNT_STRESS_SU / |RPM|}, which lands on
+	 * exactly {@value #MOUNT_STRESS_SU} SU at any speed, and {@link #calculateCannonStressApplied()} is
+	 * pinned to 0 so CBC's yaw/pitch interfaces add nothing on top of it.
+	 *
+	 * <p>An unpowered (speed 0) mount still draws 0 SU: Create's multiplier makes that unavoidable, and
+	 * it is the behaviour a gunner expects - a stopped shaft consumes nothing.
+	 */
+	private static final float MOUNT_STRESS_SU = 512f;
 
 	private static final int FIRE_COOLDOWN_TICKS = 5;
 	/** Breech fireRate index temporarily raised around each autocannon shot so CBC's own fireShot passes its
@@ -487,9 +520,10 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 	private static final int AIM_RPM_DEFAULT = 8;
 
 
-	private final ItemStack[] frequencyItems = new ItemStack[WIRELESS_CHANNELS * 2];
-	private final int[] channelPower = new int[WIRELESS_CHANNELS];
-	private final boolean[] channelPowered = new boolean[WIRELESS_CHANNELS];
+	/** Two ghost-slot items per column, {@code col * 2} and {@code col * 2 + 1}, column-major. */
+	private final ItemStack[] frequencyItems = new ItemStack[RADIO_COLUMNS * 2];
+	private final int[] channelPower = new int[RADIO_COLUMNS];
+	private final boolean[] channelPowered = new boolean[RADIO_COLUMNS];
 	private final List<MountLinkReceiver> activeReceivers = new ArrayList<>();
 	private int fireCooldown;
 	private boolean linkInitDone;
@@ -631,8 +665,8 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		linkInitDone = true;
 		if (level.isClientSide())
 			return;
-		MountLinkReceiver[] primary = new MountLinkReceiver[WIRELESS_CHANNELS];
-		for (int col = 0; col < WIRELESS_CHANNELS; col++) {
+		MountLinkReceiver[] primary = new MountLinkReceiver[RADIO_COLUMNS];
+		for (int col = 0; col < RADIO_COLUMNS; col++) {
 			ItemStack a = frequencyItems[col * 2];
 			ItemStack b = frequencyItems[col * 2 + 1];
 			if ((a == null || a.isEmpty()) && (b == null || b.isEmpty())) {
@@ -648,7 +682,7 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 			// symptom. The player sets the Create link's two filter slots to the SAME order as the column.
 			primary[col] = addReceiverFor(col, a, b);
 		}
-		for (int col = 0; col < WIRELESS_CHANNELS; col++) {
+		for (int col = 0; col < RADIO_COLUMNS; col++) {
 			if (primary[col] == null)
 				continue;
 			// Seed current power. addToNetwork->updateNetworkOf(self) only pushes to OTHER members (self
@@ -658,7 +692,7 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 			int p = currentChannelPower(primary[col]);
 			channelPower[col] = p;
 			channelPowered[col] = p > 0;
-			CBCFireControl.LOGGER.info("Fire control radio @{}: channel {} items [{} | {}] initial power {} (0=Yaw+ 1=Yaw- 2=Pitch+ 3=Pitch- 4=Fire)",
+			CBCFireControl.LOGGER.info("Fire control radio @{}: channel {} items [{} | {}] initial power {} (0=Yaw+ 1=Yaw- 2=Pitch+ 3=Pitch- 4=Fire 5=Assemble/Unload)",
 					this.worldPosition, col, frequencyItems[col * 2], frequencyItems[col * 2 + 1], p);
 		}
 	}
@@ -694,16 +728,25 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 	}
 
 	private void onChannelPower(int col, int power) {
-		if (col < 0 || col >= WIRELESS_CHANNELS)
+		if (col < 0 || col >= RADIO_COLUMNS)
 			return;
 		int prev = channelPower[col];
 		channelPower[col] = power;
 		channelPowered[col] = power > 0;
 		if (prev != power) {
 			// Diagnostic: makes a "bind frequency -> drive" in-game test observable in the log.
-			// col: 0=Yaw+ 1=Yaw- 2=Pitch+ 3=Pitch- 4=Fire ; power 0 = unpowered, >0 = a matching Create link/controller is powered.
+			// col: 0=Yaw+ 1=Yaw- 2=Pitch+ 3=Pitch- 4=Fire 5=Assemble/Unload; power 0 = unpowered, >0 = a matching link is powered.
 			CBCFireControl.LOGGER.info("Fire control radio @{}: channel {} power {} -> {}",
 					this.worldPosition, col, prev, power);
+		}
+		if (power > 0 && prev == 0 && col == CH_ASSEMBLE) {
+			// Rising edge only, so holding the channel powered does not toggle the cannon repeatedly: it
+			// unloads an assembled gun and otherwise assembles one, the same semantics as the GUI button
+			// (see MountFrequencyScreen.sendToggle). Both helpers already refuse to run client-side.
+			if (this.isRunning())
+				consoleDisassemble();
+			else
+				consoleAssemble();
 		}
 		if (power > 0 && prev == 0 && col == CH_FIRE) {
 			MountedAutocannonContraption autocannon = getMountedAutocannon();
@@ -784,6 +827,39 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 				consoleAdjustPitch(pitchStep);
 		}
 
+	}
+
+	/** See {@link #MOUNT_STRESS_SU}: the mount's contribution to its kinetic network, fixed at 512 SU. */
+	@Override
+	public float calculateStressApplied() {
+		float speed = Math.abs(getTheoreticalSpeed());
+		this.lastStressApplied = speed > 1e-4f ? MOUNT_STRESS_SU / speed : 0f;
+		return this.lastStressApplied;
+	}
+
+	/**
+	 * 0: CBC's yaw and pitch interface block entities return THIS method as their own applied stress
+	 * ({@code CannonMountInterfaceBlockEntity#calculateStressApplied} delegates to the parent mount), which
+	 * is the mounted cannon's weight and therefore scaled by RPM by the network. Pinning it to 0 removes
+	 * the speed-dependent part entirely; the flat 512 SU is claimed once, on the mount block entity above,
+	 * rather than once per interface.
+	 */
+	@Override
+	public float calculateCannonStressApplied() {
+		return 0f;
+	}
+
+	/**
+	 * Re-push the stored stress whenever the network's speed changes, because the stored value encodes the
+	 * RPM it was calculated at ({@code 512 / |RPM|}). Create calls this hook right after every
+	 * {@code setSpeed()} it performs (RotationPropagator), and Create's own generators refresh their stress
+	 * the same way through {@code KineticNetwork#updateStressFor}.
+	 */
+	@Override
+	public void onSpeedChanged(float newSpeed) {
+		super.onSpeedChanged(newSpeed);
+		if (hasNetwork())
+			getOrCreateNetwork().updateStressFor(this, calculateStressApplied());
 	}
 
 	private boolean hasKineticStressInput() {

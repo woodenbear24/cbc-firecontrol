@@ -301,15 +301,20 @@ public final class HeadAimClientEvents {
 		 * correct to issue from this stage. lines() is the wire format, and it additionally demands a per-vertex
 		 * normal, which segment() supplies.
 		 */
-		VertexConsumer fills = buffers.getBuffer(RenderType.debugQuads());
-		VertexConsumer lines = buffers.getBuffer(RenderType.lines());
+		/*
+		 * No consumer is taken once and held across the drawing. {@code BufferSource} keeps one shared builder
+		 * at a time: asking for a different {@code RenderType} ends and uploads the previous one, so a reference
+		 * obtained before such a switch points at a builder that is no longer building, and the next
+		 * {@code addVertex} throws {@code IllegalStateException: Not building!}. Each drawing block therefore
+		 * asks for the consumer it needs at the moment it needs it.
+		 */
 		RenderSystem.setShader(GameRenderer::getPositionColorShader);
 		RenderSystem.enableBlend();
 		RenderSystem.defaultBlendFunc();
 		long gameTime = level.getGameTime();
 		for (int row = 0; row < payload.count(); row++)
-			drawRow(poseStack, fills, lines, cameraPos, right, up, look, level, payload, row, gameTime);
-		drawSightPoint(poseStack, fills, lines, cameraPos, right, up, look, level);
+			drawRow(poseStack, buffers, cameraPos, right, up, look, level, payload, row, gameTime);
+		drawSightPoint(poseStack, buffers, cameraPos, right, up, look, level);
 		buffers.endBatch(RenderType.debugQuads());
 		buffers.endBatch(RenderType.lines());
 		RenderSystem.disableBlend();
@@ -376,7 +381,7 @@ public final class HeadAimClientEvents {
 	 * not a trajectory: a shell rises, falls, and drifts, and a wire drawn straight would read as the shot flying
 	 * straight. The console's own flight is what produced the point, and the point is the honest half of it.
 	 */
-	private static void drawRow(PoseStack poseStack, VertexConsumer fills, VertexConsumer lines, Vec3 camera,
+	private static void drawRow(PoseStack poseStack, MultiBufferSource.BufferSource buffers, Vec3 camera,
 			Vec3 right, Vec3 up, Vec3 look, Level level, HeadAimSyncPayload payload, int row, long gameTime) {
 		byte status = payload.status()[row];
 		if (status == HeadAimSyncPayload.STATUS_NONE)
@@ -425,12 +430,14 @@ public final class HeadAimClientEvents {
 		Vec3 armA = right.add(up).normalize();
 		Vec3 armB = right.add(up.reverse()).normalize();
 		float thickness = Math.max(0.4F, half * 0.17F);
+		VertexConsumer fills = buffers.getBuffer(RenderType.debugQuads());
 		bar(fills, pose, centre, armA, half * 1.5F, armA.cross(look), thickness, r, g, b, 0.85F * dim);
 		bar(fills, pose, centre, armB, half * 1.5F, armB.cross(look), thickness, r, g, b, 0.85F * dim);
 		bar(fills, pose, new Vec3(0.0, half * 0.9, 0.0), new Vec3(0.0, 1.0, 0.0), half * 1.8F, right,
 				Math.max(0.3F, half * 0.11F), r, g, b, 0.50F * dim);
 		float y0 = 0.06F;
 		float y1 = y0 + half * 0.45F;
+		VertexConsumer lines = buffers.getBuffer(RenderType.lines());
 		ring(lines, pose, half, y0, r, g, b, 0.95F * dim);
 		if (hit) {
 			ring(lines, pose, half, y1, r, g, b, 0.55F);
@@ -455,7 +462,7 @@ public final class HeadAimClientEvents {
 	 * front of them, and aiming at their own vehicle puts it on the far side of it. Drawn in a colour no row uses,
 	 * and much smaller than the impact markers, because it is a reference rather than a result.
 	 */
-	private static void drawSightPoint(PoseStack poseStack, VertexConsumer fills, VertexConsumer lines, Vec3 camera,
+	private static void drawSightPoint(PoseStack poseStack, MultiBufferSource.BufferSource buffers, Vec3 camera,
 			Vec3 right, Vec3 up, Vec3 look, Level level) {
 		if (Double.isNaN(drawSight[0]))
 			return;
@@ -474,9 +481,11 @@ public final class HeadAimClientEvents {
 		Vec3 armA = right.add(up).normalize();
 		Vec3 armB = right.add(up.reverse()).normalize();
 		float thickness = Math.max(0.25F, half * 0.22F);
+		VertexConsumer fills = buffers.getBuffer(RenderType.debugQuads());
 		bar(fills, pose, centre, armA, half * 1.4F, armA.cross(look), thickness, r, g, b, 0.55F);
 		bar(fills, pose, centre, armB, half * 1.4F, armB.cross(look), thickness, r, g, b, 0.55F);
 		float spoke = half * 0.5F;
+		VertexConsumer lines = buffers.getBuffer(RenderType.lines());
 		segment(lines, pose, new Vec3(-spoke, 0.0, 0.0), new Vec3(spoke, 0.0, 0.0), r, g, b, 0.9F);
 		segment(lines, pose, new Vec3(0.0, -spoke, 0.0), new Vec3(0.0, spoke, 0.0), r, g, b, 0.9F);
 		segment(lines, pose, new Vec3(0.0, 0.0, -spoke), new Vec3(0.0, 0.0, spoke), r, g, b, 0.9F);

@@ -30,13 +30,23 @@ import net.neoforged.neoforge.items.SlotItemHandler;
  * Redstone Link transmitter (or a Create LinkedController column) set to the SAME two items drives
  * this mount on that channel within Create's linkRange.
  *
+ * <p>The last column is the mount's own assemble/disassemble channel (see
+ * {@link AdvancedCannonMountBlockEntity#CH_ASSEMBLE}). It behaves like any other column - a powered
+ * Create link on its two items assembles or unloads the cannon - but the trajectory calculator does
+ * not mirror it, because the console's channel grid is five columns wide, so a SYNC can never change
+ * this column's items.
+ *
  * contentHolder is the mount BlockPos (authoritative on the server; reconstructed on the client from
  * the openMenu extraData buffer). The menu itself is stateless - it mirrors the block entity's stored
  * frequency items and pushes edits back to the block entity (server side only).
  */
 public class MountFrequencyMenu extends GhostItemMenu<BlockPos> {
 
-	public static final int CHANNELS = 5;
+	/**
+	 * Columns on the panel, mirrored from the block entity that owns the stored items so the ghost
+	 * inventory can never end up shorter than the grid addSlots() lays out.
+	 */
+	public static final int CHANNELS = AdvancedCannonMountBlockEntity.RADIO_COLUMNS;
 	private static final int SLOT_COUNT = CHANNELS * 2;
 
 	/** Server path: contentHolder is the real mount position (built by the MenuProvider). */

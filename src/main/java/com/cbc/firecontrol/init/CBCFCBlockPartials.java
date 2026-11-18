@@ -9,23 +9,37 @@ import net.minecraft.resources.ResourceLocation;
  * Flywheel partial models supplied by cbc_firecontrol itself (as opposed to the ones we
  * import from CBC via {@link rbasamoyai.createbigcannons.index.CBCBlockPartials}).
  *
- * Two partials:
+ * Three partials:
  * <ul>
  *   <li>{@link #FIRE_CONTROL_ROTATING}: user's own trunnion-cradle turntable geometry authored
  *       in Blockbench at {@code .cbc_src/fire_control_rotating.bbmodel}, exported as
  *       {@code assets/cbc_firecontrol/models/block/advanced_cannon_mount/fire_control_rotating.json}.
  *       The FBModel JSON mirrors the bbmodel export exactly (same 9 cubes, same Y 0..20 model
- *       coords, same autouv-absolute UV rects, same rotation origins) except for one texture
- *       alias addition: Blockbench exported every face as {@code "texture": "#missing"} because
- *       no texture is yet bound in the project, so we add {@code "parent": "minecraft:block/block"}
- *       and a {@code textures} map aliasing {@code #0} to Create's {@code create:block/brass_block}
- *       and rewrite each face's {@code #missing} to {@code #0}. The geometry itself is not
- *       modified in any way; the user's Blockbench project remains the source of truth.</li>
+ *       coords, same absolute UV rects, same rotation origins). As of the brass-texture repaint
+ *       both the UV rects and the texture alias come from our own atlas: every face references
+ *       {@code #0} = {@code cbc_firecontrol:block/fire_control_rotating} (64x64, painted flat
+ *       Create-brass style with iron bearing/axle sockets on the bottom face), and the JSON is
+ *       regenerated straight from the live Blockbench project so UVs can never drift out of sync
+ *       with the exported PNG. The base plinth half-slabs live in the same folder
+ *       ({@code models/block/advanced_cannon_mount/advanced_cannon_mount[_flipped].json}) and are
+ *       painted on their own 16x16 texture {@code cbc_firecontrol:block/advanced_cannon_mount}
+ *       (Blockbench project {@code .cbc_src/advanced_cannon_mount.bbmodel}), so no bearing/axle art
+ *       can leak onto the plinth; {@code blockstates/advanced_cannon_mount.json} references those
+ *       two subfolder paths. The geometry itself is not modified; the user's Blockbench project remains the
+ *       source of truth.</li>
  *   <li>{@link #CARRIAGE_AXLE}: inline re-host of CBC's
  *       {@code cannon_carriage/carriage_axle.json} with parent-alias texture references
  *       resolved directly to Create's own shaft axis textures so it matches CBC's original
  *       'mechanical shaft' visual style and sidesteps the Flywheel PartialModel bake-time
  *       limitation where a model's parent chain alias may not resolve.</li>
+ *   <li>{@link #CALCULATOR_LINK_CARD}: the link card that fills the trajectory calculator's card
+ *       rack. One instance is drawn per slot that holds a calculator_link item, by
+ *       {@link com.cbc.firecontrol.client.TrajectoryCalculatorBERenderer}, lifted by whole multiples
+ *       of two model units so it hangs from the rack bar of its own slot. Geometry and UVs come from
+ *       {@code models/block/trajectory_calculator/trajectory_calculator_link.json}, the card group the
+ *       user authored in Blockbench; its plate's east face samples the copper column of
+ *       {@code cbc_firecontrol:block/trajectory_calculator_link}, which is the side facing the
+ *       console's monitor panel cube at model x=8..16.</li>
  * </ul>
  *
  * Class-init triggers lazily when the visual/BERs read the static fields. To ensure Flywheel
@@ -71,6 +85,20 @@ public class CBCFCBlockPartials {
 	public static final PartialModel CARRIAGE_AXLE =
 			PartialModel.of(ResourceLocation.fromNamespaceAndPath(
 					CBCFireControl.MODID, "block/advanced_cannon_mount/carriage_axle"));
+
+	/**
+	 * One calculator_link card for the trajectory calculator's rack. Loaded from
+	 * {@code models/block/trajectory_calculator/trajectory_calculator_link.json}, whose texture alias
+	 * points at our own {@code cbc_firecontrol:block/trajectory_calculator_link} (16x16, fully opaque
+	 * since .temp/make_link_tex.js filled the empty area with the plate's navy, because
+	 * RenderType.solid() does not blend alpha and would draw transparent texels as black).
+	 *
+	 * Declared here rather than in a client-only class so {@link #init()} still pulls it into
+	 * Flywheel's PartialModel.ALL before ModelEvent.RegisterAdditional bakes the atlas.
+	 */
+	public static final PartialModel CALCULATOR_LINK_CARD =
+			PartialModel.of(ResourceLocation.fromNamespaceAndPath(
+					CBCFireControl.MODID, "block/trajectory_calculator/trajectory_calculator_link"));
 
 	/** Empty no-op referenced from CBCFireControl's clientSetupDiag to force class-init before
 	 * Flywheel's ModelEvent.RegisterAdditional runs, so our partials are added to

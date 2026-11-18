@@ -1,0 +1,24 @@
+{
+	"format_version": "1.21.6",
+	"credit": "Base plinth half-slab, painted on its own 16x16 texture cbc_firecontrol:block/advanced_cannon_mount (flat Create-brass panel with corner rivets and bolt marks). Lives inside the models/block/advanced_cannon_mount/ folder together with the partials, referenced by blockstates/advanced_cannon_mount.json. Side faces use UV (0,0)-(16,8) and top/bottom (0,0)-(16,16), matching the Blockbench project .cbc_src/advanced_cannon_mount.bbmodel; because the bitmap is 16px, pixels == Java model texture units (16 units == whole sprite), so no scaling is needed and no bearing/axle art can leak onto the plinth.",
+	"parent": "minecraft:block/block",
+	"textures": {
+		"0": "cbc_firecontrol:block/advanced_cannon_mount",
+		"particle": "cbc_firecontrol:block/advanced_cannon_mount"
+	},
+	"elements": [
+		{
+			"from": [0, 0, 0],
+			"to": [16, 8, 16],
+			"shade": false,
+			"faces": {
+				"north": {"uv": [0, 8, 8, 12], "rotation": 180, "texture": "#0"},
+				"east": {"uv": [0, 8, 8, 12], "rotation": 180, "texture": "#0"},
+				"south": {"uv": [0, 8, 8, 12], "rotation": 180, "texture": "#0"},
+				"west": {"uv": [0, 8, 8, 12], "rotation": 180, "texture": "#0"},
+				"up": {"uv": [0, 0, 8, 8], "texture": "#0"},
+				"down": {"uv": [8, 0, 16, 8], "texture": "#0"}
+			}
+		}
+	]
+}

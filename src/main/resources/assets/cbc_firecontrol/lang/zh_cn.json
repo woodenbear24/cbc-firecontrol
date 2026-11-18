@@ -96,7 +96,7 @@
 	"cbc_firecontrol.calculator.channels": "链接频道",
 	"cbc_firecontrol.calculator.channel.filled": "已配置滤片：%s / %s",
 	"cbc_firecontrol.calculator.channels.sync": "同步",
-	"cbc_firecontrol.calculator.channels.sync_hint": "把已链接炮座的无线频道复制进本控制台的对应频道。只复制炮座已配置的频道；这里手工设置的频道保持不变。",
+	"cbc_firecontrol.calculator.channels.sync_hint": "把已链接炮座的无线频道复制进本控制台的对应频道。频道按“上下两格为一对”整体复制：炮座已配置的频道会一并覆盖本行两个滤片格（包括空着的那一格）；炮座未配置的频道保持你手工设置的内容。取出卡片会清空该行的全部频率设置。",
 	"cbc_firecontrol.calculator.channel.0": "航向 +",
 	"cbc_firecontrol.calculator.channel.1": "航向 -",
 	"cbc_firecontrol.calculator.channel.2": "仰角 +",

@@ -387,6 +387,11 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 
 	/** Set whenever the aim flags or channel strengths differ from what clients last saw. */
 	private boolean aimStateChanged;
+	/**
+	 * Whether each row held a link card on the last inventory pass, so pulling a card out clears that row's
+	 * frequency filters exactly once rather than every time the row happens to sit empty.
+	 */
+	private final boolean[] rowWasFilled = new boolean[SLOTS];
 	private boolean linksChanged = true;
 	private int recomputeCooldown = 0;
 	/** Countdown of {@link #MOUNT_CHANNEL_SYNC_INTERVAL}; forced to 0 whenever a card is inserted or re-bound. */
@@ -608,6 +613,14 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			recomputeCooldown = 0;
 			channelsChanged = true;
 			mountChannelCooldown = 0;
+			/*
+			 * Pulling a card is a channel edit as well: the row it leaves behind has no mount to transmit
+			 * to, so its filters go with the card. Syncing on this tick keeps the channels page from
+			 * showing a tuning that is already gone, and the transmitters are rebuilt below with the row
+			 * already wiped.
+			 */
+			if (pruneOrphanRowChannels())
+				sendData();
 		}
 		if (channelsChanged) {
 			channelsChanged = false;
@@ -2433,7 +2446,8 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	 *
 	 * <p>The countdown is re-armed to the full interval rather than to zero: this call just did the mirror's work,
 	 * so running it again on the next tick would copy the same filters twice. The semantics are the periodic
-	 * mirror's exactly - only non-empty mount columns are copied, and nothing a row holds by hand is blanked.
+	 * mirror's exactly - a column the mount has configured replaces that row's whole filter pair, and a
+	 * column it has not configured leaves whatever the row holds by hand alone.
 	 */
 	public void pullChannelsFromMounts() {
 		Level level = getLevel();
@@ -2451,9 +2465,17 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	 * column-major as {@code channel * FILTERS_PER_CHANNEL + filter} - identical to this calculator's
 	 * {@link #channelIndex(int, int, int)} within one row - so a column copies across without remapping.
 	 *
-	 * <p>An empty mount slot leaves the local filter alone: a gunner who configured a row by hand (a mount with
-	 * no radio yet, or a channel the mount does not use) keeps that setup instead of watching it blank out every
-	 * second. Filters that already match are not rewritten, so a steady link produces no sync traffic.
+	 * <p>A channel is mirrored as a PAIR, not filter by filter. Create keys its link network by the ordered
+	 * couple of a column's two ghost slots, and the mount registers that column whenever either slot holds
+	 * something. Copying slot by slot would keep a local filter whose matching half the mount has cleared,
+	 * so the console would transmit a couple the mount never listens for: the row reads as configured and
+	 * hears nothing. A configured column therefore replaces both of the row's filters at once, its blank
+	 * half included.
+
+	 * <p>An unset column (both slots blank) leaves the row alone: a gunner who configured a row by hand - a
+	 * mount with no radio yet, or a channel the mount does not use - keeps that setup instead of watching it
+	 * blank out every second. Pairs that already match are not rewritten, so a steady link produces no sync
+	 * traffic.
 	 */
 	private void syncChannelsFromMounts(Level level) {
 		boolean changed = false;
@@ -2465,18 +2487,23 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 				continue;
 			ItemStack[] frequencies = mount.getFrequencyItems();
 			for (int channel = 0; channel < CHANNELS_PER_SLOT; channel++) {
+				ItemStack first = mountFilterAt(frequencies, channel * FILTERS_PER_CHANNEL);
+				ItemStack second = mountFilterAt(frequencies, channel * FILTERS_PER_CHANNEL + 1);
+				if (first.isEmpty() && second.isEmpty())
+					continue; // the mount does not use this channel; leave the row's own tuning alone
+				int base = channelIndex(slot, channel, 0);
 				for (int filter = 0; filter < FILTERS_PER_CHANNEL; filter++) {
-					int from = channel * FILTERS_PER_CHANNEL + filter;
-					ItemStack mountFilter = from < frequencies.length ? frequencies[from] : ItemStack.EMPTY;
-					if (mountFilter == null || mountFilter.isEmpty())
+					ItemStack wanted = filter == 0 ? first : second;
+					ItemStack local = slotChannels.getStackInSlot(base + filter);
+					if (ItemStack.isSameItemSameComponents(local, wanted))
 						continue;
-					int index = channelIndex(slot, channel, filter);
-					ItemStack local = slotChannels.getStackInSlot(index);
-					if (ItemStack.isSameItemSameComponents(local, mountFilter))
-						continue;
-					ItemStack copy = mountFilter.copy();
-					copy.setCount(1);
-					slotChannels.setStackInSlot(index, copy);
+					if (wanted.isEmpty()) {
+						slotChannels.setStackInSlot(base + filter, ItemStack.EMPTY);
+					} else {
+						ItemStack copy = wanted.copy();
+						copy.setCount(1);
+						slotChannels.setStackInSlot(base + filter, copy);
+					}
 					changed = true;
 				}
 			}
@@ -2486,6 +2513,41 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		channelsChanged = true;
 		setChanged();
 		sendData();
+	}
+
+	/** One filter item of a mount radio column, with out of range and null both read as a blank slot. */
+	private static ItemStack mountFilterAt(ItemStack[] frequencies, int index) {
+		ItemStack stack = index < frequencies.length ? frequencies[index] : null;
+		return stack == null ? ItemStack.EMPTY : stack;
+	}
+
+	/**
+	 * Server side: a card pulled out of a row takes that row's frequency settings with it. The filters are
+	 * pure configuration for a mount the row can no longer reach, so keeping them means the channels page
+	 * shows a tuning nobody is listening for - and the next card dropped into that row inherits the
+	 * previous mount's radio until the mirror happens to overwrite it. Only rows that held a card on the
+	 * previous pass are wiped, so a gunner who pre-tunes an empty row is left alone.
+	 */
+	private boolean pruneOrphanRowChannels() {
+		boolean changed = false;
+		for (int slot = 0; slot < SLOTS; slot++) {
+			boolean filled = !inventory.getStackInSlot(slot).isEmpty();
+			if (rowWasFilled[slot] && !filled) {
+				int base = channelIndex(slot, 0, 0);
+				for (int i = 0; i < CHANNELS_PER_SLOT * FILTERS_PER_CHANNEL; i++) {
+					if (slotChannels.getStackInSlot(base + i).isEmpty())
+						continue;
+					slotChannels.setStackInSlot(base + i, ItemStack.EMPTY);
+					changed = true;
+				}
+			}
+			rowWasFilled[slot] = filled;
+		}
+		if (!changed)
+			return false;
+		channelsChanged = true;
+		setChanged();
+		return true;
 	}
 
 	/** Stable id of this calculator, assigned on the server and persisted; null on an unsynced client copy. */

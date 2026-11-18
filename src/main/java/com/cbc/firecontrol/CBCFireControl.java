@@ -2,6 +2,7 @@ package com.cbc.firecontrol;
 
 import org.slf4j.Logger;
 
+import com.cbc.firecontrol.compat.SableShipBounds;
 import com.cbc.firecontrol.init.CBCFCBlockEntities;
 import com.cbc.firecontrol.init.CBCFCArmInteractionPointTypes;
 import com.cbc.firecontrol.init.CBCFCBlockPartials;
@@ -57,6 +58,13 @@ public class CBCFireControl {
 
 	public static final String MODID = "cbc_firecontrol";
 	public static final Logger LOGGER = LogUtils.getLogger();
+
+	/**
+	 * TEMPORARY - one switch for the external view's camera diagnostics (the placement line in
+	 * {@code CameraMaxZoomMixin} and the probe in {@code ExternalViewEvents}). Set it to {@code false} and delete
+	 * both blocks once the playtest numbers have been read; nothing else consults it.
+	 */
+	public static final boolean DEBUG_CAMERA = true;
 
 	/**
 	 * CreateRegistrate instance for this mod — same pattern CBC uses in its own
@@ -211,11 +219,16 @@ public class CBCFireControl {
 		// that point will never be added to Minecraft's bake list -> its bakedModel stays null ->
 		// Flywheel's Models.partial(...) returns a null model and renders as purple/black missing
 		// texture. Our CBCFCBlockPartials class-init would otherwise be deferred until the
-		// visualizer actually runs during rendering (way after bake). Force it here so both our
-		// ROTATING_MOUNT and CARRIAGE_AXLE partials are registered in time.
+		// visualizer actually runs during rendering (way after bake). Force it here so all three of our
+		// partials - ROTATING_MOUNT, CARRIAGE_AXLE and CALCULATOR_LINK_CARD - are registered in time.
 		CBCFCBlockPartials.init();
-		LOGGER.info("CBC Fire Control: registered Flywheel partials {}.fire_control_rotating and {}.carriage_axle",
-				CBCFireControl.MODID, CBCFireControl.MODID);
+		LOGGER.info("CBC Fire Control: registered Flywheel partials {}.fire_control_rotating, {}.carriage_axle "
+				+ "and {}.trajectory_calculator/trajectory_calculator_link",
+				CBCFireControl.MODID, CBCFireControl.MODID, CBCFireControl.MODID);
+
+		// Resolve the Sable ship-bounds reflection now rather than at the first F5 press, so "the bridge is
+		// broken" is never mistaken for "the player is standing on no ship" (see SableShipBounds#prewarm).
+		SableShipBounds.prewarm();
 
 		event.enqueueWork(() -> {
 			var beType = CBCFCBlockEntities.ADVANCED_CANNON_MOUNT_BE.get();

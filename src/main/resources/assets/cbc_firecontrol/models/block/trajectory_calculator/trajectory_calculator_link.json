@@ -1,0 +1,266 @@
+{
+	"credit": "Link card as it sits in the trajectory calculator's card rack. Shape, rotation origins and every face UV rect are copied verbatim from the cube group authored in Blockbench: a plate spanning x=0..8, y=3..4, z=7..15 with six 1x1 tabs at y=4..5. The plate hangs just under a rack bar and the tabs rise into the bar band, so the card reads as slotted in rather than glued on; the rack bars themselves live in the console body model at x=0..1 for y=4..5 / 6..7 / 8..9 / 10..11 / 12..13, five of them, matching the block entity's five link-card slots. Texture is cbc_firecontrol:block/trajectory_calculator_link (16x16, artwork by the user: navy #28365d plate body, blue panel #0955a8/#1782db, copper connector ramp #cea05a/#bf8e55/#d7aa5e/#e4b763 down column x=6..7). The plate's east face UV [7,8,8,16] samples that copper column, so the copper side points toward the model's +X half where the monitor panel cube sits at x=8..16 - the card faces the display without any extra rotation, because cards and panel rotate together with the blockstate. Rendered per slot by com.cbc.firecontrol.client.TrajectoryCalculatorBERenderer from partial com.cbc.firecontrol.init.CBCFCBlockPartials#CALCULATOR_LINK_CARD, translated by whole multiples of 2 model units in Y so each slot hangs from its own bar. The texture's empty area at x>=8 was filled with the plate's own navy by .temp/make_link_tex.js so that no face samples a fully transparent texel, which RenderType.solid() would draw as black.",
+	"parent": "minecraft:block/block",
+	"textures": {
+	"0": "cbc_firecontrol:block/trajectory_calculator_link",
+	"particle": "cbc_firecontrol:block/trajectory_calculator_link"
+},
+	"elements": [
+	{
+	"from": [5,4,12],
+	"to": [6,5,13],
+	"rotation": {
+	"angle": 0,
+	"axis": "y",
+	"origin": [5,4,12]
+},
+	"faces": {
+	"north": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"east": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"south": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"west": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"up": {
+	"uv": [9,5,8,4],
+	"texture": "#0"
+},
+	"down": {
+	"uv": [10,4,9,5],
+	"texture": "#0"
+}
+}
+},
+	{
+	"from": [5,4,10],
+	"to": [6,5,11],
+	"rotation": {
+	"angle": 0,
+	"axis": "y",
+	"origin": [5,4,10]
+},
+	"faces": {
+	"north": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"east": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"south": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"west": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"up": {
+	"uv": [10,5,9,4],
+	"texture": "#0"
+},
+	"down": {
+	"uv": [10,4,9,5],
+	"texture": "#0"
+}
+}
+},
+	{
+	"from": [3,4,11],
+	"to": [4,5,12],
+	"rotation": {
+	"angle": 0,
+	"axis": "y",
+	"origin": [3,4,11]
+},
+	"faces": {
+	"north": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"east": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"south": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"west": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"up": {
+	"uv": [10,5,9,4],
+	"texture": "#0"
+},
+	"down": {
+	"uv": [10,4,9,5],
+	"texture": "#0"
+}
+}
+},
+	{
+	"from": [3,4,13],
+	"to": [4,5,14],
+	"rotation": {
+	"angle": 0,
+	"axis": "y",
+	"origin": [3,4,13]
+},
+	"faces": {
+	"north": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"east": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"south": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"west": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"up": {
+	"uv": [9,5,8,4],
+	"texture": "#0"
+},
+	"down": {
+	"uv": [10,4,9,5],
+	"texture": "#0"
+}
+}
+},
+	{
+	"from": [1,4,9],
+	"to": [2,5,10],
+	"rotation": {
+	"angle": 0,
+	"axis": "y",
+	"origin": [1,4,9]
+},
+	"faces": {
+	"north": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"east": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"south": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"west": {
+	"uv": [9,4,10,5],
+	"texture": "#0"
+},
+	"up": {
+	"uv": [9,5,8,4],
+	"texture": "#0"
+},
+	"down": {
+	"uv": [10,4,9,5],
+	"texture": "#0"
+}
+}
+},
+	{
+	"from": [1,4,11],
+	"to": [2,5,14],
+	"rotation": {
+	"angle": 0,
+	"axis": "y",
+	"origin": [1,4,11]
+},
+	"faces": {
+	"north": {
+	"uv": [10,4,11,5],
+	"texture": "#0"
+},
+	"east": {
+	"uv": [10,4,11,5],
+	"texture": "#0"
+},
+	"south": {
+	"uv": [10,4,11,5],
+	"texture": "#0"
+},
+	"west": {
+	"uv": [11,4,12,5],
+	"texture": "#0"
+},
+	"up": {
+	"uv": [12,5,11,4],
+	"texture": "#0"
+},
+	"down": {
+	"uv": [12,4,11,5],
+	"texture": "#0"
+}
+}
+},
+	{
+	"from": [0,3,7],
+	"to": [8,4,15],
+	"rotation": {
+	"angle": 0,
+	"axis": "y",
+	"origin": [0,3,7]
+},
+	"faces": {
+	"north": {
+	"uv": [8,0,16,1],
+	"texture": "#0"
+},
+	"east": {
+	"uv": [7,8,8,16],
+	"rotation": 90,
+	"texture": "#0"
+},
+	"south": {
+	"uv": [8,2,16,3],
+	"texture": "#0"
+},
+	"west": {
+	"uv": [8,1,16,2],
+	"texture": "#0"
+},
+	"up": {
+	"uv": [0,0,8,8],
+	"texture": "#0"
+},
+	"down": {
+	"uv": [0,8,8,16],
+	"texture": "#0"
+}
+}
+}
+],
+	"gui_light": "front",
+	"groups": [
+	{
+	"name": "calculator_link",
+	"origin": [5,4,12],
+	"scope": 0,
+	"color": 0,
+	"children": [0,1,2,3,4,5,6]
+}
+]
+}
