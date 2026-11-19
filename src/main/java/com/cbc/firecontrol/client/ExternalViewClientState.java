@@ -33,8 +33,8 @@ import org.jetbrains.annotations.Nullable;
  * delta of the player's own view angles, so the sensitivity stays 1:1 at every zoom. What the view does hold is
  * that rotation in world space while the hull turns (see {@link #updateInertia}), because Sable writes the
  * hull's heading and pitch into the camera's own fields, and the pivot is chosen so that a pitching or rolling
- * hull cannot translate it (see {@link #refreshPivot}). The only easing anywhere is the capped return of the
- * azimuth once the mouse has been idle - a constant rate, not a blend - so nothing lags behind a movement.
+ * hull cannot translate it (see {@link #refreshPivot}). Nothing eases or drifts behind anything: the azimuth
+ * only moves when the mouse moves it, and it stays where the mouse left it for as long as the view is held.
  */
 public final class ExternalViewClientState {
 
@@ -127,11 +127,12 @@ public final class ExternalViewClientState {
 		vehicleMisses = 0;
 		Vec3 eye = rider == null ? Vec3.ZERO : rider.getEyePosition(1.0F);
 		refreshPivot(rider, eye);
-		CBCFireControl.LOGGER.info("[cbc_firecontrol] external view on, orbit {} blocks, lift {} (+{} deg below "
-				+ "frame centre), pivot {}, sized by {}",
-				String.format("%.1f", distance), String.format("%.1f", orbitLift(distance)),
-				String.format("%.1f", bandDegrees()),
-				pivotFromVehicle ? "vehicle centre" : "rider eye", vehicleKind(rider));
+		if (CBCFireControl.DEBUG_CAMERA)
+			CBCFireControl.LOGGER.info("[cbc_firecontrol] external view on, orbit {} blocks, lift {} (+{} deg below "
+					+ "frame centre), pivot {}, sized by {}",
+					String.format("%.1f", distance), String.format("%.1f", orbitLift(distance)),
+					String.format("%.1f", bandDegrees()),
+					pivotFromVehicle ? "vehicle centre" : "rider eye", vehicleKind(rider));
 	}
 
 	/**
@@ -253,6 +254,12 @@ public final class ExternalViewClientState {
 	private static float lastViewYaw;
 	private static float lastViewPitch;
 	/**
+	 * The angle delta applied on the last frame. A delta the player did not make is the twitch being hunted, so
+	 * it is kept rather than discarded, and the anomaly line reads it against the raw entity angles.
+	 */
+	private static float lastDeltaYaw;
+	private static float lastDeltaPitch;
+	/**
 	 * There is deliberately no return. The azimuth is held in world space until the mouse moves it, so a hull
 	 * turn leaves the view looking the way it did before the turn, for as long as the view is held. An earlier
 	 * build drifted the azimuth back toward the hull-relative framing after an idle delay, which reintroduced
@@ -283,6 +290,8 @@ public final class ExternalViewClientState {
 		float dPitch = viewPitch - lastViewPitch;
 		lastViewYaw = viewYaw;
 		lastViewPitch = viewPitch;
+		lastDeltaYaw = dYaw;
+		lastDeltaPitch = dPitch;
 		inertiaYaw = Mth.wrapDegrees(inertiaYaw + dYaw);
 		inertiaPitch = Mth.clamp(inertiaPitch + dPitch, -90.0F, 90.0F);
 	}
@@ -294,6 +303,15 @@ public final class ExternalViewClientState {
 
 	public static float inertiaPitch() {
 		return inertiaPitch;
+	}
+
+	/** The angle delta applied on the last frame, for the anomaly line. */
+	public static float lastDeltaYaw() {
+		return lastDeltaYaw;
+	}
+
+	public static float lastDeltaPitch() {
+		return lastDeltaPitch;
 	}
 
 	/**
@@ -374,10 +392,11 @@ public final class ExternalViewClientState {
 		if (!active || amount == 0.0D)
 			return;
 		zoomFactor = Mth.clamp(zoomFactor * (float) Math.pow(ZOOM_STEP, amount), ZOOM_MIN, ZOOM_MAX);
-		CBCFireControl.LOGGER.info("[cbc_firecontrol] external zoom x{} -> orbit {} blocks, lift {} blocks",
-				String.format("%.2f", zoomFactor),
-				String.format("%.1f", Float.isNaN(orbitDistance) ? 0.0F : desiredDistance(Minecraft.getInstance().player)),
-				String.format("%.1f", orbitLift(Float.isNaN(orbitDistance) ? 0.0F : desiredDistance(Minecraft.getInstance().player))));
+		if (CBCFireControl.DEBUG_CAMERA)
+			CBCFireControl.LOGGER.info("[cbc_firecontrol] external zoom x{} -> orbit {} blocks, lift {} blocks",
+					String.format("%.2f", zoomFactor),
+					String.format("%.1f", Float.isNaN(orbitDistance) ? 0.0F : desiredDistance(Minecraft.getInstance().player)),
+					String.format("%.1f", orbitLift(Float.isNaN(orbitDistance) ? 0.0F : desiredDistance(Minecraft.getInstance().player))));
 	}
 
 	/** The wheel's current multiplier, for the diagnostic line. */
@@ -423,8 +442,25 @@ public final class ExternalViewClientState {
 		}
 		float fresh = desiredDistance(mc.player);
 		if (!Float.isNaN(fresh)) {
+			Vec3 previousPivot = pivotPoint;
+			boolean previousFromVehicle = pivotFromVehicle;
+			// Both of these are per-tick steps the player cannot cause, and each one moves the eye by blocks,
+			// so they are logged when DEBUG_CAMERA is on: the view measures the hull afresh every tick, and a
+			// box that changes size, or a pivot that changes source, reads as a jerk in the frame.
+			if (CBCFireControl.DEBUG_CAMERA && !Float.isNaN(orbitDistance)
+					&& Math.abs(fresh - orbitDistance) > 0.4F)
+				CBCFireControl.LOGGER.info("[cbc_firecontrol] orbit distance stepped {} -> {} blocks",
+						String.format("%.1f", orbitDistance), String.format("%.1f", fresh));
 			orbitDistance = fresh;
 			refreshPivot(mc.player, mc.player.getEyePosition(1.0F));
+			if (CBCFireControl.DEBUG_CAMERA && previousPivot != null && pivotPoint != null) {
+				double moved = previousPivot.distanceTo(pivotPoint);
+				if (previousFromVehicle != pivotFromVehicle || moved > 1.5D)
+					CBCFireControl.LOGGER.info("[cbc_firecontrol] pivot stepped {} blocks ({} -> {})",
+							String.format("%.1f", moved),
+							previousFromVehicle ? "vehicle centre" : "rider eye",
+							pivotFromVehicle ? "vehicle centre" : "rider eye");
+			}
 			vehicleMisses = 0;
 			return;
 		}

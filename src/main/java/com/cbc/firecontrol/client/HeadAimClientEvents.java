@@ -64,7 +64,8 @@ import java.util.Objects;
  * so bores a few blocks apart bear in on it and their shots meet where the spotter is looking.</li>
  * <li><b>The markers.</b> The console sends the predicted impact of each row's next shot, drawn as a filled cross
  * with a ground frame around it, standing on a pole, coloured by the row that fired it, and it sends the
- * convergence point every bore is being driven at, drawn as a small pale-gold cross and cube. Nothing is
+ * convergence point every bore is being driven at - where the spotter's sight line lands - drawn as a small
+ * pale-gold cross and cube. Nothing is
  * integrated client-side: the flight the marker comes from is the console's own forward prediction, so the marker
  * and the console's readouts can never disagree. No line is drawn from a muzzle to a marker - a straight wire
  * between the two would look like a trajectory and is not one.</li>
@@ -75,6 +76,14 @@ public final class HeadAimClientEvents {
 
 	/** How often a spotter waiting for a busy console asks again, in ticks (2 s). */
 	private static final int RETRY_INTERVAL = 40;
+	/**
+	 * How often the sight line is re-reported even when the view has not moved, in ticks. The console keeps a
+	 * reported camera line for six ticks and then reads the holder's head instead, and on a Sable hull that head
+	 * belongs to the deck rather than to the view, so a spotter holding steady would watch the bores slew toward
+	 * some heading of the ship. Re-reporting inside the console's own solve interval keeps the live camera line
+	 * ahead of that fallback, while a client that has genuinely gone quiet still loses the line after six ticks.
+	 */
+	private static final int SIGHT_HEARTBEAT_TICKS = 4;
 	/**
 	 * A coordinate farther than this from the camera is not in the space being rendered, so it is brought into it
 	 * before it is drawn (see {@link #renderPoint}). Generously above any distance a marker is legitimately drawn
@@ -106,6 +115,7 @@ public final class HeadAimClientEvents {
 	private static double lastDirX, lastDirY, lastDirZ;
 	private static double lastRange;
 	private static boolean sightSent;
+	private static int sightHeartbeat;
 
 	private HeadAimClientEvents() {
 	}
@@ -146,8 +156,11 @@ public final class HeadAimClientEvents {
 			answer = null;
 			drawnFor = null;
 			sightSent = false;
+			sightHeartbeat = 0;
 			retryCooldown = 0;
 		}
+		if (sightHeartbeat > 0)
+			sightHeartbeat--;
 		if (wanted == null)
 			return;
 		if (answer != null)
@@ -178,9 +191,12 @@ public final class HeadAimClientEvents {
 	 * that the rows read as near-parallel (the right answer for a target beyond the guns) and finite enough that
 	 * the drive loop still has a bearing to hold.
 	 *
-	 * <p>Sent per frame but only when the view moved: the console quantises its cue to a quarter of a degree
-	 * anyway, so the thresholds below are far finer than anything it will act on, and a spotter holding steady on a
-	 * converged gun sends nothing at all even on a client rendering a hundred and twenty frames a second.
+	 * <p>Sent per frame but only when the view moved, with one exception: a line is re-reported every
+	 * {@link #SIGHT_HEARTBEAT_TICKS} ticks even when nothing has changed. The console quantises its cue to a
+	 * quarter of a degree anyway, so the thresholds below are far finer than anything it will act on, and a spotter
+	 * holding steady would otherwise send nothing at all - while the console's copy of the line has only a six-tick
+	 * life, after which it reads the holder's head instead. On a Sable hull that head belongs to the deck, so a
+	 * still view would watch the bores slew toward some heading of the ship rather than hold the crosshair.
 	 */
 	private static void sendSight(Camera camera, HeadAimSyncPayload payload) {
 		if (!camera.isInitialized())
@@ -196,7 +212,7 @@ public final class HeadAimClientEvents {
 			return;
 		dir = dir.normalize();
 		double range = convergenceRange(mc, level, origin, dir);
-		if (sightSent
+		if (sightSent && sightHeartbeat > 0
 				&& Math.abs(origin.x - lastOriginX) < 0.05
 				&& Math.abs(origin.y - lastOriginY) < 0.05
 				&& Math.abs(origin.z - lastOriginZ) < 0.05
@@ -213,6 +229,7 @@ public final class HeadAimClientEvents {
 		lastDirZ = dir.z;
 		lastRange = range;
 		sightSent = true;
+		sightHeartbeat = SIGHT_HEARTBEAT_TICKS;
 		PacketDistributor.sendToServer(new HeadAimSightPayload(payload.calculator(), origin.x, origin.y, origin.z,
 				(float) dir.x, (float) dir.y, (float) dir.z, (float) range));
 	}
@@ -336,7 +353,9 @@ public final class HeadAimClientEvents {
 		for (int row = 0; row < count; row++)
 			put(drawImpact, row * 3, renderPoint(level, camera, payload.impact(), row * 3));
 		/*
-		 * The convergence point is sent in the scale the holder's camera renders in and always sits within a few
+		 * The aim frame is the spotter's own sight point: where their camera's ray lands on terrain, or the
+		 * bounded far point when it lands on nothing at all. It is drawn live because it is what every bore is
+		 * being driven at, and it is sent in the scale the holder's camera renders in and always sits within a few
 		 * hundred blocks of it, so the probe passes it straight through. Running it through the same check anyway
 		 * is what keeps a console aiming from one frame and a spotter watching from another from putting it
 		 * somewhere neither of them can see.
@@ -456,11 +475,13 @@ public final class HeadAimClientEvents {
 	}
 
 	/**
-	 * The convergence point itself, drawn as a small camera-facing cross with a wireframe cube around it. It is the
-	 * spot every bore is being driven at, so it is what tells a spotter whether the guns are aimed where their
-	 * crosshair is or somewhere the sight limits moved the aim to: aiming at the sky puts the point far out in
-	 * front of them, and aiming at their own vehicle puts it on the far side of it. Drawn in a colour no row uses,
-	 * and much smaller than the impact markers, because it is a reference rather than a result.
+	 * The aim frame: a small camera-facing cross with a wireframe cube around it, standing on the point the
+	 * spotter's sight line lands on - terrain where their ray touches it, the bounded far point where it touches
+	 * nothing. Every linked bore is driven at this one point, each with the aim its row's inverse solution
+	 * computed for it, so the frame is both what the spotter is looking at and what the salvo is asked to hit. A
+	 * row whose shell lands elsewhere still shows its own impact cross, and the gap between the two is the news.
+	 * Drawn in a colour no row uses and much smaller than the impact markers, because it is a reference rather
+	 * than a result.
 	 */
 	private static void drawSightPoint(PoseStack poseStack, MultiBufferSource.BufferSource buffers, Vec3 camera,
 			Vec3 right, Vec3 up, Vec3 look, Level level) {

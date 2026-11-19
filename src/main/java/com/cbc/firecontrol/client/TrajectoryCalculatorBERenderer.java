@@ -87,7 +87,7 @@ public class TrajectoryCalculatorBERenderer implements BlockEntityRenderer<Traje
 		if (level == null)
 			return;
 
-		if (!rackDiagnosticLogged) {
+		if (CBCFireControl.DEBUG_CAMERA && !rackDiagnosticLogged) {
 			rackDiagnosticLogged = true;
 			BlockEntityType<?> type = be.getType();
 			int filled = 0;

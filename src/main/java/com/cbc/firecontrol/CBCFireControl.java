@@ -60,11 +60,30 @@ public class CBCFireControl {
 	public static final Logger LOGGER = LogUtils.getLogger();
 
 	/**
-	 * TEMPORARY - one switch for the external view's camera diagnostics (the placement line in
-	 * {@code CameraMaxZoomMixin} and the probe in {@code ExternalViewEvents}). Set it to {@code false} and delete
-	 * both blocks once the playtest numbers have been read; nothing else consults it.
+	 * One switch for the external view's camera diagnostics: the placement line and the rotation-anomaly line in
+	 * {@code CameraMaxZoomMixin}, the distance probe in {@code ExternalViewEvents}, and the orbit/pivot step lines
+	 * in {@link com.cbc.firecontrol.client.ExternalViewClientState}. It is {@code false} now that the view's
+	 * behaviour has been read out; flip it to {@code true} if a twitch or a framing pop has to be hunted again -
+	 * those lines are event-triggered, so an off switch costs nothing while an on switch names the frame it fires
+	 * on rather than sampling every sixty frames.
 	 */
-	public static final boolean DEBUG_CAMERA = true;
+	public static final boolean DEBUG_CAMERA = false;
+
+	/**
+	 * One switch for the head-aim console's sight-line diagnostic: the line naming the tick a reported camera
+	 * sight expired and the solve fell back to reading the holder's head - which is what slewed the bores toward
+	 * a heading of the ship when a spotter stood still on a Sable deck. {@code false} now that the client's
+	 * heartbeat has proved it holds the line; flip it back if that re-centring ever returns.
+	 */
+	public static final boolean DEBUG_HEAD_AIM = false;
+
+	/**
+	 * One switch for the fire-control radio's wiring diagnostics: the channel a mount's transmitter changes on and
+	 * the channel set a console registers. They were what made a "bind a frequency, drive a gear" test readable in
+	 * the log during the kinetic rewiring; {@code false} now, because the wiring has been verified in game and
+	 * every channel change would otherwise print a line.
+	 */
+	public static final boolean DEBUG_RADIO = false;
 
 	/**
 	 * CreateRegistrate instance for this mod — same pattern CBC uses in its own

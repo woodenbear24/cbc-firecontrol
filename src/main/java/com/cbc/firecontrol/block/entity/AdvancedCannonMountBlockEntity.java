@@ -692,8 +692,6 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 			int p = currentChannelPower(primary[col]);
 			channelPower[col] = p;
 			channelPowered[col] = p > 0;
-			CBCFireControl.LOGGER.info("Fire control radio @{}: channel {} items [{} | {}] initial power {} (0=Yaw+ 1=Yaw- 2=Pitch+ 3=Pitch- 4=Fire 5=Assemble/Unload)",
-					this.worldPosition, col, frequencyItems[col * 2], frequencyItems[col * 2 + 1], p);
 		}
 	}
 
@@ -733,12 +731,9 @@ public class AdvancedCannonMountBlockEntity extends CannonMountBlockEntity imple
 		int prev = channelPower[col];
 		channelPower[col] = power;
 		channelPowered[col] = power > 0;
-		if (prev != power) {
-			// Diagnostic: makes a "bind frequency -> drive" in-game test observable in the log.
-			// col: 0=Yaw+ 1=Yaw- 2=Pitch+ 3=Pitch- 4=Fire 5=Assemble/Unload; power 0 = unpowered, >0 = a matching link is powered.
+		if (prev != power && CBCFireControl.DEBUG_RADIO)
 			CBCFireControl.LOGGER.info("Fire control radio @{}: channel {} power {} -> {}",
 					this.worldPosition, col, prev, power);
-		}
 		if (power > 0 && prev == 0 && col == CH_ASSEMBLE) {
 			// Rising edge only, so holding the channel powered does not toggle the cannon repeatedly: it
 			// unloads an assembled gun and otherwise assembles one, the same semantics as the GUI button

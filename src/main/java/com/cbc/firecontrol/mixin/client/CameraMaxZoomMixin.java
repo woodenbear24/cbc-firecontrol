@@ -111,9 +111,10 @@ public abstract class CameraMaxZoomMixin {
 	private static Vector3f LEFT;
 
 	/**
-	 * TEMPORARY, alongside {@code CBCFireControl.DEBUG_CAMERA}: the placement runs every rendered frame, and a log
-	 * line plus two {@code String.format} calls per frame measurably costs frames. One line per ~60 frames is enough
-	 * to read the numbers. Delete with the debug block.
+	 * Gated by {@code CBCFireControl.DEBUG_CAMERA}: the placement runs every rendered frame, and a log line plus
+	 * two {@code String.format} calls per frame measurably costs frames. One line per sixty frames is enough to
+	 * read the numbers, and the switch is off now that they have been read - the condition short-circuits before
+	 * the counter is touched, so an off switch costs nothing in the hot path.
 	 */
 	private static int placementLogTicks;
 
@@ -184,7 +185,14 @@ public abstract class CameraMaxZoomMixin {
 		// Entity#calculateViewVector (L1616-1624) inlined on purpose: that method is exactly what Sable redirects
 		// to fold the sub-level pose into the view vector, so the orbit must not call it.
 		float mousePitch = mc.player.getViewXRot(partialTick);
-		float mouseYaw = mc.player.getViewYRot(partialTick);
+		// Entity#getViewYRot lerps yRotO into yRot with Mth.lerp, and Mth.lerp does not wrap angles: across the
+		// +/-180 seam it travels the long way round, so one tick of a one-degree turn sweeps 358 degrees through
+		// that tick's rendered frames. That sweep is ordinary frame-by-frame motion, which is exactly what the
+		// inertial azimuth accumulates, so an almost-still mouse can produce a violent half-turn flick - the
+		// twitch being hunted. Smoothing the wrapped delta reaches the same endpoint the short way round.
+		float rawYaw = mc.player.getYRot();
+		float yawDelta = Mth.wrapDegrees(rawYaw - mc.player.yRotO);
+		float mouseYaw = Mth.wrapDegrees(mc.player.yRotO + yawDelta * partialTick);
 		// What the camera carried when vanilla's setup reached us: the composed angle, player yaw plus the hull
 		// heading minus 180 (and mouse pitch plus hull pitch), which is why an unwritten camera turns with the hull.
 		float beforePitch = this.xRot;
@@ -229,6 +237,19 @@ public abstract class CameraMaxZoomMixin {
 		// on this frame, so there is no lag that would read as a sensitivity that changes with distance.
 		setPosition(wanted);
 
+		// More than six degrees applied in a single frame is either a genuine fast pan or the seam sweep above.
+		// The raw angles are printed beside the smoothed one so the two are told apart: yRotO and raw equal,
+		// with a large delta, means the interpolation moved something the player never did.
+		if (CBCFireControl.DEBUG_CAMERA && Math.abs(ExternalViewClientState.lastDeltaYaw()) > 6.0F) {
+			CBCFireControl.LOGGER.info("[cbc_firecontrol] rotation anomaly: applied {} deg this frame (yawO {}, "
+					+ "raw {}, smoothed {}, vanilla interpolated {}, partial {}, pitch delta {}, hull heading {})",
+					String.format("%.2f", ExternalViewClientState.lastDeltaYaw()),
+					String.format("%.1f", mc.player.yRotO), String.format("%.1f", rawYaw),
+					String.format("%.1f", mouseYaw), String.format("%.1f", mc.player.getViewYRot(partialTick)),
+					String.format("%.2f", partialTick),
+					String.format("%.2f", ExternalViewClientState.lastDeltaPitch()),
+					String.format("%.1f", hullHeading));
+		}
 		if (CBCFireControl.DEBUG_CAMERA && ++placementLogTicks % 60 == 0) {
 				CBCFireControl.LOGGER.info("[cbc_firecontrol] external camera placed: before {} / {} deg, inertia {} / {} "
 						+ "deg, after {} / {} deg, rendered dir {} / {} deg, frame up y {}, mouse {} / {} deg, hull pitch "

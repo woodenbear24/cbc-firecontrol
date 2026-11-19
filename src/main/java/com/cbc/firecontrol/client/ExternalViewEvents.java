@@ -78,7 +78,7 @@ public final class ExternalViewEvents {
 			return;
 		float written = desired / (scale * createZoom);
 		event.setDistance(written);
-		if (!loggedApply) {
+		if (CBCFireControl.DEBUG_CAMERA && !loggedApply) {
 			loggedApply = true;
 			CBCFireControl.LOGGER.info("[cbc_firecontrol] external distance applied: {} blocks requested, "
 					+ "{} written to the event (entity scale {}, create zoom {})",

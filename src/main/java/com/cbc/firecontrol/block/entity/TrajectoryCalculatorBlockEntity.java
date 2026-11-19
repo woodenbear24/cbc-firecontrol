@@ -471,6 +471,16 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	@Nullable
 	private Vec3 headAimSightPoint;
 	private int headAimSightAge;
+	/** The stale-sight fallback last logged, so a holder who stops moving is reported once rather than twice a tick. */
+	private boolean headAimStaleLogged;
+	/**
+	 * The point the head-aim rows are solved against: the spotter's aim frame, handed to the readout loop by
+	 * {@link #tickHeadAim} so the row's aim is the inverse solution for that point rather than a bare bearing.
+	 * Null when no frame has been established yet, which leaves the loop with nothing to solve - the state a
+	 * console in normal duty is in.
+	 */
+	@Nullable
+	private Vec3 headAimSolveTarget;
 	/** The cue each row is being driven to, quantised; NaN when the row has no cue. */
 	private final double[] cueYaw = new double[SLOTS];
 	private final double[] cuePitch = new double[SLOTS];
@@ -667,8 +677,10 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			if (mountLoadCooldown[slot] > 0)
 				mountLoadCooldown[slot]--;
 		if (recomputeCooldown-- <= 0) {
-			// Head aiming wants the forward predictions twice as often as a console solving for a typed target,
-			// and it gets them for the same price: the solve it replaces is the inverse one, not the flight.
+			// Head aiming wants the forward predictions twice as often as a console solving for a typed target:
+			// the spotter's frame moves with their camera, and a bore slewed at a few degrees a second is the only
+			// thing between that frame and the gun. It pays for the inverse solve as well now, because each row is
+			// driven at the angles solved for the frame rather than at the bare bearing to it.
 			recomputeCooldown = headAimOwner == null ? RECOMPUTE_INTERVAL : HEAD_AIM_SOLVE_INTERVAL;
 			recomputeAndSync();
 			/*
@@ -702,16 +714,24 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		boolean changed = false;
 		for (int slot = 0; slot < SLOTS; slot++) {
 			/*
-			 * While a spotter holds the console nothing is solved against a target: the rows are pointed along a
-			 * live sight line, and the inverse solve is the expensive half of this loop. The forward flight still
-			 * runs, because that flight IS the answer the holder's markers are drawn from. The cue angles the
-			 * head-aim pass wrote for the rows are carried through untouched, so this loop neither overwrites them
-			 * nor reads them as a change worth broadcasting.
+			 * While a spotter holds the console the frame their sight line lands on IS the target this loop solves
+			 * against, so the row's aim is the same kind of inverse solution an entered or locked target gets:
+			 * elevation carries the drop and the shot lands on the frame instead of along the line to it. The
+			 * forward flight still runs, because that flight is the answer the holder's impact markers are drawn
+			 * from, and it is measured against the pose the mount actually stands in - which after a turn is the
+			 * closed-loop check that the solved angles were reached.
 			 */
 			SlotResult result = resolveSlot(level, slot, false,
-					headAimOwner == null ? missionAimTarget(slot) : null);
+					headAimOwner == null ? missionAimTarget(slot) : headAimSolveTarget);
 			fresh[slot] = result.prediction();
-			freshAims[slot] = headAimOwner == null ? result.aim() : aims[slot];
+			/*
+			 * A row the solver cannot solve keeps the cue angle the sight pass wrote for it, which still points
+			 * the bore at the frame: the frame is followed in azimuth whatever the elevation answer is, and the
+			 * readout keeps saying CUE rather than claiming a verdict that was never computed.
+			 */
+			freshAims[slot] = headAimOwner == null ? result.aim()
+					: solvedHeadAim(result.aim()) && !sameHeadAimAim(result.aim(), aims[slot]) ? result.aim()
+							: aims[slot];
 			freshRounds[slot] = result.snapshot() == null ? RoundState.READY : result.snapshot().round();
 			freshReach[slot] = recomputeReach(slot, result);
 			freshMuzzle[slot] = freshReach[slot].reachable() ? result.snapshot().muzzle() : Vec3.ZERO;
@@ -1289,6 +1309,8 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		headAimSightRange = HeadAimConvergence.MAX_RANGE;
 		headAimSightPoint = null;
 		headAimSightAge = 0;
+		headAimSolveTarget = null;
+		headAimStaleLogged = false;
 		headAimSyncPending = true;
 		headAimCueCooldown = 0;
 		recomputeCooldown = 0;
@@ -1316,6 +1338,9 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 		headAimSightRange = HeadAimConvergence.MAX_RANGE;
 		headAimSightPoint = null;
 		headAimSightAge = 0;
+		// Nothing is solved for once the claim is gone: the console goes back to its own targets on the next
+		// recompute, and a stale solve target would keep the rows chasing a frame nobody is holding.
+		headAimSolveTarget = null;
 		headAimLimitedNoticeMask = 0;
 		Arrays.fill(headAimLimited, false);
 		Level level = getLevel();
@@ -1360,8 +1385,34 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 	}
 
 	/**
+	 * Whether a solve is worth driving a head-aimed row with. A cue is not one (it is the bearing this class
+	 * wrote, not an answer from the solver), and a blocked path is not one either: driving onto an aim whose
+	 * flight runs through a hill would slew the gun to a bearing it cannot fire along, which is worse than
+	 * keeping the bore on the frame and letting the spotter see the limitation in their own markers.
+	 */
+	private static boolean solvedHeadAim(AimSolution aim) {
+		return aim.hasSolution() && aim.outcome() != AimOutcome.CUE && aim.outcome() != AimOutcome.BLOCKED
+				&& !Double.isNaN(aim.yawDeg()) && !Double.isNaN(aim.pitchDeg());
+	}
+
+	/**
+	 * Whether a fresh head-aim solve asks for the angles the row already holds, read at the cue's own
+	 * quantisation. This matters beyond the readout: {@code driveAimChannels} treats a different solution OBJECT
+	 * as the target having moved and drops that row's derivative term, so handing it a new object twice a tick
+	 * for angles that differ by a thousandth of a degree would take the damping out of every head-aim turn.
+	 */
+	private static boolean sameHeadAimAim(AimSolution fresh, AimSolution held) {
+		return solvedHeadAim(held) && solvedHeadAim(fresh)
+				&& quantizeCue(fresh.yawDeg()) == quantizeCue(held.yawDeg())
+				&& quantizeCue(fresh.pitchDeg()) == quantizeCue(held.pitchDeg());
+	}
+
+	/**
 	 * Keep every linked row pointed at the holder's sight point. Runs each tick, ahead of the drive loop, so the
-	 * cue the loop measures the bores against is this tick's rather than last tick's.
+	 * cue the loop measures the bores against is this tick's rather than last tick's. The point is also handed to
+	 * the readout loop below as the row's solve target, so the angles this pass drives are the inverse solution
+	 * the console computed for the frame two ticks ago - two ticks is nothing against a slew of a few degrees a
+	 * second, and it is what keeps one solve per row per cycle rather than two.
 	 *
 	 * <p>What is written is an aim angle, not a target: {@link #driveAimChannels} already compares each mount's own
 	 * bore against the angle its row holds and transmits the difference, so driving onto a cue costs nothing beyond
@@ -1404,13 +1455,29 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 			look = headAimSightDir;
 			range = headAimSightRange;
 			headAimSightAge--;
+			headAimStaleLogged = false;
 		} else {
 			headAimSightAge = 0;
 			range = sightLaserRange(owner.level(), origin, look, owner);
+			/*
+			 * The head is what the holder's client last sent in a movement packet, and on a Sable hull the player
+			 * entity is turned by the deck rather than by the view. So this branch is the moment the bores stop
+			 * following the crosshair and start following the ship, which is exactly the re-centring a spotter
+			 * reports after holding a view still. It is logged once per stale episode, because the episode is the
+			 * finding - not each of its ticks.
+			 */
+			if (CBCFireControl.DEBUG_HEAD_AIM && !headAimStaleLogged)
+				CBCFireControl.LOGGER.info(
+						"[cbc_firecontrol] head-aim sight expired for {}; aiming from the server-side head instead "
+								+ "(head yaw {}, pitch {}, laser range {})",
+						owner.getGameProfile().getName(), String.format("%.1f", owner.getYRot()),
+						String.format("%.1f", owner.getXRot()), String.format("%.1f", range));
+			headAimStaleLogged = true;
 		}
 		range = HeadAimConvergence.clampRange(range);
 		Vec3 sightPoint = origin.add(look.scale(range));
 		headAimSightPoint = isFinite(sightPoint) ? sightPoint : null;
+		headAimSolveTarget = headAimSightPoint;
 		for (int slot = 0; slot < SLOTS; slot++) {
 			if (!isSlotActive(slot)) {
 				cueYaw[slot] = Double.NaN;
@@ -1441,8 +1508,19 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 				continue;
 			}
 			cue = cue.normalize();
-			double yaw = quantizeCue(InverseBallistics.yawOf(cue));
-			double pitch = quantizeCue(InverseBallistics.pitchOf(cue));
+			/*
+			 * The row is driven at the frame with the angles the solver computed for it, which is the difference
+			 * between a shot that flies along the sight line and one that lands on it: the solved elevation
+			 * carries the drop, and the solver verified its own flight before it was accepted. Where there is no
+			 * solution - beyond the gun, inside its minimum range, nothing loaded - the bare bearing is still the
+			 * right answer, because the frame has to be followed in azimuth whatever the elevation cannot do, and
+			 * pinning at the carriage stop below is what tells the spotter which half failed.
+			 */
+			AimSolution solved = aims[slot];
+			double yaw = solvedHeadAim(solved) ? quantizeCue(solved.yawDeg())
+					: quantizeCue(InverseBallistics.yawOf(cue));
+			double pitch = solvedHeadAim(solved) ? quantizeCue(solved.pitchDeg())
+					: quantizeCue(InverseBallistics.pitchOf(cue));
 			/*
 			 * Where the sight line asks for an elevation this carriage cannot give, the cue stops at the carriage
 			 * instead of asking for the impossible - the part of a WT turret that has an aim it cannot reach. The
@@ -1470,7 +1548,15 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 				continue; // Same quantised angle: keep the row's existing solution and its rate history.
 			cueYaw[slot] = yaw;
 			cuePitch[slot] = pitch;
-			aims[slot] = cueSolution(yaw, pitch);
+			/*
+			 * A row driven by the bare bearing writes that cue as its aim. A row driven by a solved angle keeps
+			 * the solution, which is what its readout should show - except when the pitch had to be pinned at the
+			 * carriage's stop: leaving the unreachable solved elevation in the row's aim would have the drive
+			 * loop wind its integral against an error that can never close, which is the failure the pin exists
+			 * to prevent. The guard above means this only happens when the angles actually moved.
+			 */
+			if (!solvedHeadAim(solved) || pinned)
+				aims[slot] = cueSolution(yaw, pitch);
 			aimStateChanged = true;
 		}
 		/*
@@ -2596,7 +2682,7 @@ public class TrajectoryCalculatorBlockEntity extends SmartBlockEntity implements
 				activeTransmitters.add(transmitter);
 			}
 		}
-		if (!activeTransmitters.isEmpty())
+		if (CBCFireControl.DEBUG_RADIO && !activeTransmitters.isEmpty())
 			CBCFireControl.LOGGER.info("[cbc_firecontrol] calculator @{} registered {} channel(s), signal {}",
 					worldPosition, activeTransmitters.size(), emittedLinkPower);
 	}
