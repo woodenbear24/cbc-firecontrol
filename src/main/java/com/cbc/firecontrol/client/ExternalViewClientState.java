@@ -29,10 +29,12 @@ import org.jetbrains.annotations.Nullable;
  * {@code CameraType.THIRD_PERSON_BACK}, because {@code CameraType} is an enum and a fourth constant cannot be
  * added without replacing it wholesale. {@code MinecraftCameraTypeCycleMixin} slots this flag into the F5 cycle.
  *
- * <p>Nothing here filters or eases anything. The frame answers the mouse and the vehicle as they are, which is
- * what keeps the look sensitivity 1:1 at every zoom instead of easing into it, and the pivot is chosen so that a
- * pitching or rolling hull cannot translate it (see {@link #refreshPivot}) - there is therefore no damping left
- * to lag behind the craft or to swallow a small mouse movement.
+ * <p>The mouse path is exact and undamped: every frame the view moves the camera's rotation by precisely the
+ * delta of the player's own view angles, so the sensitivity stays 1:1 at every zoom. What the view does hold is
+ * that rotation in world space while the hull turns (see {@link #updateInertia}), because Sable writes the
+ * hull's heading and pitch into the camera's own fields, and the pivot is chosen so that a pitching or rolling
+ * hull cannot translate it (see {@link #refreshPivot}). The only easing anywhere is the capped return of the
+ * azimuth once the mouse has been idle - a constant rate, not a blend - so nothing lags behind a movement.
  */
 public final class ExternalViewClientState {
 
@@ -144,6 +146,10 @@ public final class ExternalViewClientState {
 		orbitDistance = Float.NaN;
 		pivotPoint = null;
 		pivotFromVehicle = false;
+		inertiaSeeded = false;
+		drifting = false;
+		inertiaYaw = 0.0F;
+		inertiaPitch = 0.0F;
 		vehicleMisses = 0;
 		CBCFireControl.LOGGER.info("[cbc_firecontrol] external view off ({})", reason);
 	}
@@ -227,6 +233,110 @@ public final class ExternalViewClientState {
 	 */
 	public static float bandDegrees() {
 		return (float) Math.toDegrees(Math.atan(SCREEN_BAND_RATIO));
+	}
+	/**
+	 * The camera's azimuth and elevation, held in world space and moved only by the mouse.
+	 *
+	 * <p>Sable writes a composed angle into {@code Camera#xRot}/{@code yRot} while {@code setup} runs: the
+	 * placement line measured {@code camera yaw = player yaw + hull heading - 180} and {@code camera pitch =
+	 * mouse pitch + hull pitch} over a run of frames, so the fields the lens renders carry the hull's own
+	 * rotation. Left alone, the hundred-degree turn those lines recorded swings the eye twenty-four blocks around
+	 * a thirteen-block orbit, and a steep pitch drops it thirteen blocks - which is the "camera turns with the
+	 * vehicle" complaint, and why the rotation is written now instead of read.
+	 *
+	 * <p>The mouse is still 1:1. The same run logged {@code player raw == mouse}, so {@code player yaw} is the
+	 * hull-local angle and its frame-to-frame delta is pure input that never contains the hull's turn. Pitch is
+	 * seeded from the mouse rather than from the camera field, so entering the view on a heeling hull starts
+	 * level and hull pitch cannot tilt the horizon afterwards.
+	 */
+	private static float inertiaYaw;
+	private static float inertiaPitch;
+	private static float lastViewYaw;
+	private static float lastViewPitch;
+	/** Seeded from the live camera on the first placement frame, which is what makes entering the view a no-op. */
+	private static boolean inertiaSeeded;
+	/**
+	 * The game time the mouse last moved and the tick the drift last ran. Measured on game time rather than
+	 * counted per frame because the placement runs every rendered frame: a rate per tick is the same speed at
+	 * thirty frames a second as at a hundred and twenty, which a per-frame step would not be.
+	 */
+	private static long lastInputTime;
+	private static long lastDriftTime;
+	/** True while the azimuth is drifting back toward the hull, for the diagnostic line. */
+	private static boolean drifting;
+	/**
+	 * How long the mouse has to be idle before the orbit starts finding the hull-relative framing again, in
+	 * ticks. 160 ticks is eight seconds: long enough that a turn does not drag the camera around mid-flick.
+	 */
+	private static final int RETURN_DELAY_TICKS = 160;
+	/**
+	 * The cap on that return, in degrees per tick - 1.25 is 25 degrees per second. Rate-limited rather than
+	 * blended, so the camera does not ease toward a target the way damping does: it holds still until the delay
+	 * expires, then turns at a constant speed.
+	 */
+	private static final float RETURN_RATE_DEG_PER_TICK = 1.25F;
+
+	/**
+	 * Advances the inertial rotation once per rendered frame, driven from the placement, which sits at the tail
+	 * of {@code Camera#setup} and is therefore the last word on the camera for both the lens and the orbit.
+	 *
+	 * <p>The delayed return aims at the framing the mouse asks for, {@code viewYaw + hullHeading - 180} - the
+	 * same expression Sable composes - so panning to look at the ship's quarter stays panned: the camera comes
+	 * back to the hull-relative angle you chose, not to dead astern.
+	 */
+	public static void updateInertia(float cameraYaw, float viewYaw, float viewPitch, float hullHeading) {
+		long now = gameTime();
+		if (!inertiaSeeded) {
+			// From the camera field, whose convention already carries the -180 hull mapping, and from the mouse
+			// pitch, which is level. The first frame leaves the view pointing exactly where it already pointed.
+			inertiaYaw = cameraYaw;
+			inertiaPitch = viewPitch;
+			lastViewYaw = viewYaw;
+			lastViewPitch = viewPitch;
+			lastInputTime = now;
+			lastDriftTime = now;
+			inertiaSeeded = true;
+			drifting = false;
+			return;
+		}
+		float dYaw = Mth.wrapDegrees(viewYaw - lastViewYaw);
+		float dPitch = viewPitch - lastViewPitch;
+		lastViewYaw = viewYaw;
+		lastViewPitch = viewPitch;
+		if (dYaw != 0.0F || dPitch != 0.0F)
+			lastInputTime = now;
+		inertiaYaw = Mth.wrapDegrees(inertiaYaw + dYaw);
+		inertiaPitch = Mth.clamp(inertiaPitch + dPitch, -90.0F, 90.0F);
+		if (now == lastDriftTime)
+			return;
+		lastDriftTime = now;
+		drifting = now - lastInputTime >= RETURN_DELAY_TICKS;
+		if (!drifting)
+			return;
+		float target = Mth.wrapDegrees(viewYaw + hullHeading - 180.0F);
+		float diff = Mth.wrapDegrees(target - inertiaYaw);
+		inertiaYaw = Mth.wrapDegrees(inertiaYaw
+				+ Mth.clamp(diff, -RETURN_RATE_DEG_PER_TICK, RETURN_RATE_DEG_PER_TICK));
+	}
+
+	/** The rotation the camera is written with this frame, for the placement and the diagnostic line. */
+	public static float inertiaYaw() {
+		return inertiaYaw;
+	}
+
+	public static float inertiaPitch() {
+		return inertiaPitch;
+	}
+
+	/** Whether the azimuth is holding in world space (false) or drifting back toward the hull (true). */
+	public static boolean isDrifting() {
+		return drifting;
+	}
+
+	/** The game time the idle delay and the drift rate are measured on; 0 while no level is loaded. */
+	private static long gameTime() {
+		Minecraft mc = Minecraft.getInstance();
+		return mc.level == null ? 0L : mc.level.getGameTime();
 	}
 
 	/**

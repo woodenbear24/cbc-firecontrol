@@ -263,6 +263,40 @@ public final class SableShipBounds {
 		}
 	}
 	/**
+	 * The hull's heading in Minecraft's {@code yRot} convention - the yaw of the vector the bow points along -
+	 * or 0.0 when it cannot be read.
+	 *
+	 * <p>Read for the playtest question "does the camera keep its own orientation relative to world coordinates
+	 * while the vehicle turns". The placement line prints it next to the camera's yaw and the player's raw yaw,
+	 * so the three possible causes are distinguishable rather than guessed: the camera field itself tracking the
+	 * hull, Sable composing the pose into the view vector at render time, or the player's own rotation being
+	 * rewritten to the ship's frame.
+	 */
+	public static float hullYRot(@Nullable Entity entity) {
+		if (entity == null || !ensureAvailable() || pose == null || transformNormal == null)
+			return 0.0F;
+		Object subLevel = lookup(entity);
+		if (subLevel == null)
+			return 0.0F;
+		try {
+			Object shipPose = pose.invoke(subLevel);
+			if (shipPose == null)
+				return 0.0F;
+			Object rotated = transformNormal.invoke(shipPose, new Vec3(0.0D, 0.0D, -1.0D));
+			if (!(rotated instanceof Vec3 v))
+				return 0.0F;
+			if (v.x * v.x + v.z * v.z < 1.0E-12D)
+				return 0.0F;
+			// Entity#calculateViewVector negates the yaw when it builds the x component, so the yaw of a
+			// direction vector is the negative arc tangent of x over z - the same convention the orbit's own
+			// forward vector is built from, which is what makes the two comparable in the log.
+			double yaw = -Math.toDegrees(Math.atan2(v.x, v.z));
+			return (float) (((yaw + 180.0D) % 360.0D + 360.0D) % 360.0D - 180.0D);
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return 0.0F;
+		}
+	}
+	/**
 	 * (Vec3) -> Vec3 on {@code Pose3dc}: a plot-local point moved into world space. The pose maps plot-local
 	 * to world, so transforming the local origin gives the plot's world origin - the point the hull pitches
 	 * and rolls about.
@@ -330,5 +364,4 @@ public final class SableShipBounds {
 				transformPosition != null, posePosition != null);
 	}
 }
-
 
