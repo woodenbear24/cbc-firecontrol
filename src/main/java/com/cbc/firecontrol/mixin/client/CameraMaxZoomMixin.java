@@ -11,6 +11,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.phys.Vec3;
 
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import org.spongepowered.asm.mixin.Mixin;
@@ -47,9 +48,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <p>Why the position has to be rewritten rather than only the distance: the orbit has to turn around the vehicle
  * rather than around the sailor standing on it, and it can only do that coherently if it is built from the angles
  * the lens actually renders with, so the placement is rebuilt from {@code this.xRot}/{@code this.yRot}. The
- * rotation is deliberately not written: vanilla drives the detached camera from the player's interpolated view and
- * Sable maps that through the ship's frame, so forcing our own angles both inverted the mouse controls and pinned
- * the frame to the vehicle's heading. The offset off the axis runs along the camera's own up - perpendicular to the
+ * rotation is written from {@link ExternalViewClientState}'s inertial angles and bound to world axes by
+ * {@link #cbcfc$bindRotationToWorld}, because {@code Camera#setRotation} maps the angles it is handed through the
+ * ship pose - no choice of arguments through it can pin the lens to the world. The offset off the axis runs along
+ * the camera's own up - perpendicular to the
  * lens, never along world Y - which puts the vehicle at a constant angle below the centre of the frame whatever the
  * pitch is, and being off the axis is what makes the pulled-back distance read as a view of the ship instead of a
  * graze across the deck.
@@ -85,6 +87,28 @@ public abstract class CameraMaxZoomMixin {
 	 */
 	@Shadow
 	private Vector3f forwards;
+	/**
+	 * The quaternion {@code setRotation} derives its vectors from, and the other two vectors it derives. The world
+	 * binding replaces all four, so the hull's pose cannot reach the lens however the setter maps its arguments.
+	 *
+	 * <p>Declared without {@code final} on purpose: the target fields are final, but a final shadow is a field
+	 * javac demands an initializer for, and Mixin only matches shadows on name and descriptor, not on modifiers.
+	 */
+	@Shadow
+	private Vector3f up;
+	@Shadow
+	private Vector3f left;
+	@Shadow
+	private Quaternionf rotation;
+	@Shadow
+	private float roll;
+	/** The un-rotated seeds {@code Camera#setRotation} rotates into the three vectors above (Camera.java L26-28). */
+	@Shadow
+	private static Vector3f FORWARDS;
+	@Shadow
+	private static Vector3f UP;
+	@Shadow
+	private static Vector3f LEFT;
 
 	/**
 	 * TEMPORARY, alongside {@code CBCFireControl.DEBUG_CAMERA}: the placement runs every rendered frame, and a log
@@ -92,6 +116,28 @@ public abstract class CameraMaxZoomMixin {
 	 * to read the numbers. Delete with the debug block.
 	 */
 	private static int placementLogTicks;
+
+	/**
+	 * Binds the camera's orientation to world axes: the quaternion and the three direction vectors are rebuilt
+	 * from the inertial yaw and pitch with world Y as the up seed and no roll, which is what
+	 * {@code Camera#setRotation} does with vanilla angles (Camera.java L117-125).
+	 *
+	 * <p>Doing it here rather than through the setter is the point of the binding. The setter maps whatever it is
+	 * handed through the ship pose - measured this session, a written yaw comes back out as "yaw + heading - 180"
+	 * and a pitch as "pitch - hull pitch" - so arguments can only be pre-inverted against that, and the inversion
+	 * is an additive approximation of a quaternion composition: it drifts apart as the hull pitches and rolls.
+	 * Overwriting the state afterwards means the hull's rotation cannot reach the lens at all, which is the
+	 * world-space orientation being asked for.
+	 */
+	private void cbcfc$bindRotationToWorld(float yaw, float pitch) {
+		this.rotation.rotationYXZ((float) Math.PI - yaw * Mth.DEG_TO_RAD, -pitch * Mth.DEG_TO_RAD, 0.0F);
+		FORWARDS.rotate(this.rotation, this.forwards);
+		UP.rotate(this.rotation, this.up);
+		LEFT.rotate(this.rotation, this.left);
+		this.xRot = pitch;
+		this.yRot = yaw;
+		this.roll = 0.0F;
+	}
 
 	/**
 	 * The distance arriving here is already what the view asked for: {@code Camera#setup} multiplies the event's
@@ -143,34 +189,25 @@ public abstract class CameraMaxZoomMixin {
 		// heading minus 180 (and mouse pitch plus hull pitch), which is why an unwritten camera turns with the hull.
 		float beforePitch = this.xRot;
 		float beforeYaw = this.yRot;
-		// The rotation is written from the view's own inertial angles. The parameter order is the trap that made
-		// this misbehave once: Camera#setRotation is (yRot, xRot) - yaw first, pitch second - and the two-arg
-		// overload is deprecated in favour of the three-arg one that also takes a roll. Passing pitch first turns
-		// the mouse elevation into the orbit azimuth, which whips the view around at extreme pitch. Roll is
-		// deliberately 0: the hull's roll must not reach the lens.
-		//
-		// And setRotation is not a plain setter here. Whatever it is handed comes back out of the fields mapped
-		// through the ship pose, measured on every debug line of this session: the yaw comes back as
-		// "written + heading - 180" (heading -71.6 gave +108.4) and the pitch as "written - hull pitch"
-		// (hull pitch +25.5 gave -25.6). Writing the inertia pair straight into it therefore still swung the
-		// lens around with the hull. The write subtracts that mapping first, so the mapped result - what the
-		// frame renders and what the orbit below is built from - is exactly the inertia pair.
+		// The orientation is bound to world axes rather than to Sable's hull frame, from the view's own inertial
+		// pair: the mouse is the only thing that moves those angles, and nothing drifts them back toward the hull.
+		// Roll is pinned to zero inside the binding so a heeling hull cannot tilt the horizon.
 		float hullHeading = SableShipBounds.hullYRot(mc.player);
 		float hullPitch = SableShipBounds.hullXRot(mc.player);
-		ExternalViewClientState.updateInertia(this.yRot, mouseYaw, mousePitch, hullHeading);
-		float mappingYaw = Mth.wrapDegrees(hullHeading - 180.0F);
-		float mappingPitch = hullPitch;
-		float wroteYaw = Mth.wrapDegrees(ExternalViewClientState.inertiaYaw() - mappingYaw);
-		float wrotePitch = ExternalViewClientState.inertiaPitch() + mappingPitch;
-		setRotation(wroteYaw, wrotePitch, 0.0F);
+		ExternalViewClientState.updateInertia(this.yRot, mouseYaw, mousePitch);
+		float inertiaYaw = ExternalViewClientState.inertiaYaw();
+		float inertiaPitch = ExternalViewClientState.inertiaPitch();
+		// Written directly rather than through setRotation, whose arguments this build maps through the ship pose
+		// (a written yaw came back as yaw + heading - 180, a pitch as pitch - hull pitch, on every debug line).
+		cbcfc$bindRotationToWorld(inertiaYaw, inertiaPitch);
 		// Read back after the write, so the orbit and the lens are built from the SAME angles. That disagreement
 		// is what made the vehicle fly around the screen while the mouse moved.
 		float pitch = this.xRot;
 		float yaw = this.yRot;
-		// The frame renders the vectors setRotation derives rather than the fields, so the diagnostic also reads
-		// the direction the render actually uses: if that is not the angle written here, something re-set the
-		// camera after this point and the override has to move further downstream. In 1.21.1 that direction is the
-		// forwards field itself, rotated in place by setRotation.
+		// The frame renders the vectors the binding derives rather than the fields, so the diagnostic reads
+		// the direction the render actually uses and the frame up with it: up.y is cos(pitch) while the
+		// roll is world-zero, so any other reading means the hull pose is still reaching the lens. The
+		// direction in 1.21.1 is the forwards field itself, rotated in place by setRotation.
 		Vector3f rendered = this.forwards;
 		float renderedPitch = (float) Math.toDegrees(Math.asin(-rendered.y));
 		float renderedYaw = Mth.wrapDegrees(-(float) Math.toDegrees(Math.atan2(rendered.x, rendered.z)));
@@ -193,23 +230,21 @@ public abstract class CameraMaxZoomMixin {
 		setPosition(wanted);
 
 		if (CBCFireControl.DEBUG_CAMERA && ++placementLogTicks % 60 == 0) {
-						CBCFireControl.LOGGER.info("[cbc_firecontrol] external camera placed: before {} / {} deg, wrote yaw {} "
-					+ "pitch {} deg, inertia {} / {} deg ({}), after {} / {} deg, rendered dir {} / {} deg, mouse "
-					+ "{} / {} deg, hull pitch {} heading {} deg, orbit {}, lift {}, pivot {}, band {} deg below "
-					+ "frame centre; after and the rendered direction must both equal the inertia pair, which is "
-					+ "what the pre-inverted write is supposed to guarantee",
-					String.format("%.1f", beforePitch), String.format("%.1f", beforeYaw),
-					String.format("%.1f", wroteYaw), String.format("%.1f", wrotePitch),
-					String.format("%.1f", ExternalViewClientState.inertiaYaw()),
-					String.format("%.1f", ExternalViewClientState.inertiaPitch()),
-					ExternalViewClientState.isDrifting() ? "drifting back" : "holding in world",
-					String.format("%.1f", yaw), String.format("%.1f", pitch),
-					String.format("%.1f", renderedYaw), String.format("%.1f", renderedPitch),
-					String.format("%.1f", mousePitch), String.format("%.1f", mouseYaw),
-					String.format("%.1f", hullPitch), String.format("%.1f", hullHeading),
-					String.format("%.1f", orbit), String.format("%.1f", lift),
-					ExternalViewClientState.pivotIsVehicle() ? "vehicle centre" : "rider eye",
-					String.format("%.1f", ExternalViewClientState.bandDegrees()));
+				CBCFireControl.LOGGER.info("[cbc_firecontrol] external camera placed: before {} / {} deg, inertia {} / {} "
+						+ "deg, after {} / {} deg, rendered dir {} / {} deg, frame up y {}, mouse {} / {} deg, hull pitch "
+						+ "{} heading {} deg, orbit {}, lift {}, pivot {}, band {} deg below frame centre; the fields, "
+						+ "the rendered direction and the frame up must all be world-space, so neither the hull pitch "
+						+ "nor its heading may appear in any of them",
+						String.format("%.1f", beforePitch), String.format("%.1f", beforeYaw),
+						String.format("%.1f", inertiaYaw), String.format("%.1f", inertiaPitch),
+						String.format("%.1f", yaw), String.format("%.1f", pitch),
+						String.format("%.1f", renderedYaw), String.format("%.1f", renderedPitch),
+						String.format("%.2f", this.up.y),
+						String.format("%.1f", mousePitch), String.format("%.1f", mouseYaw),
+						String.format("%.1f", hullPitch), String.format("%.1f", hullHeading),
+						String.format("%.1f", orbit), String.format("%.1f", lift),
+						ExternalViewClientState.pivotIsVehicle() ? "vehicle centre" : "rider eye",
+						String.format("%.1f", ExternalViewClientState.bandDegrees()));
 		}
 	}
 }
