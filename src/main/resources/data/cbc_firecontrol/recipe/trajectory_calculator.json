@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "building",
+  "key": {
+    "L": {
+      "item": "cbc_firecontrol:calculator_link"
+    },
+    "T": {
+      "item": "minecraft:tinted_glass"
+    },
+    "M": {
+      "item": "create:electron_tube"
+    },
+    "K": {
+      "item": "create:brass_casing"
+    }
+  },
+  "pattern": [
+    " L",
+    "MT",
+    " K"
+  ],
+  "result": {
+    "count": 1,
+    "id": "cbc_firecontrol:trajectory_calculator"
+  }
+}

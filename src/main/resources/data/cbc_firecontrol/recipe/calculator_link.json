@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "redstone",
+  "key": {
+    "B": {
+      "item": "create:electron_tube"
+    },
+    "L": {
+      "item": "create:transmitter"
+    },
+    "C": {
+      "item": "minecraft:blue_dye"
+    },
+    "P": {
+      "item": "create:copper_sheet"
+    },
+    "G": {
+      "item": "minecraft:gold_nugget"
+    }
+  },
+  "pattern": [
+    "BL",
+    "CP",
+    "GG"
+  ],
+  "result": {
+    "count": 1,
+    "id": "cbc_firecontrol:calculator_link"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "building",
+  "key": {
+    "B": {
+      "item": "create:brass_ingot"
+    },
+    "C": {
+      "item": "create:precision_mechanism"
+    },
+    "M": {
+      "item": "createbigcannons:cannon_mount"
+    },
+    "L": {
+      "item": "create:transmitter"
+    },
+    "K": {
+      "item": "create:brass_casing"
+    }
+  },
+  "pattern": [
+    "B B",
+    "CMC",
+    "LKL"
+  ],
+  "result": {
+    "count": 1,
+    "id": "cbc_firecontrol:advanced_cannon_mount"
+  }
+}

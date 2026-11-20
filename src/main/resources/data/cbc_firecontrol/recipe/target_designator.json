@@ -2,20 +2,21 @@
   "type": "minecraft:crafting_shaped",
   "category": "equipment",
   "key": {
-    "#": {
-      "item": "minecraft:amethyst_shard"
+    "S": {
+      "item": "minecraft:spyglass"
     },
-    "X": {
-      "item": "minecraft:copper_ingot"
+    "L": {
+      "item": "cbc_firecontrol:calculator_link"
     }
   },
   "pattern": [
-    " # ",
-    " X ",
-    " X "
+    "   ",
+    "SLS",
+    "   "
   ],
   "result": {
     "count": 1,
     "id": "cbc_firecontrol:target_designator"
   }
 }
+

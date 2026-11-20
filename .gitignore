@@ -67,6 +67,12 @@ vanilla_spyglass_scope.png
 args_probe.json
 args_proj.json
 
+### Blueprint screenshots the crafting recipes were read off of (the recipes are the tracked result) ###
+craft-adv-mount.png
+craft-calculator.png
+craft-designator.png
+craft-link.png
+
 
 ### Local reference copy of CBC upstream sources (for API lookup during dev only) ###
 .cbc_src/
