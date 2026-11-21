@@ -215,5 +215,6 @@
 	"cbc_firecontrol.round.incomplete_round": "round not assembled to full length",
 	"cbc_firecontrol.round.not_ignitable": "load cannot be ignited by this charge",
 	"cbc_firecontrol.aim.arc.short.flat": "flat",
-	"cbc_firecontrol.aim.arc.short.lob": "plunging"
+	"cbc_firecontrol.aim.arc.short.lob": "plunging",
+	"cbc_firecontrol.external_view.entered": "External view"
 }

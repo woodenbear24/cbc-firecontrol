@@ -9,6 +9,7 @@
   ],
   "client": [
     "client.CameraMaxZoomMixin",
+    "client.GuiExternalViewMessageMixin",
     "client.MinecraftCameraTypeCycleMixin",
     "client.MouseHandlerScrollZoomMixin"
   ],

@@ -39,7 +39,7 @@ public final class ExternalViewEvents {
 	}
 
 	/**
-	 * Pull the third-person camera back to the size of the vehicle being ridden — a Create contraption or a Sable
+	 * Pull the third-person camera back to the size of the vehicle being ridden ??a Create contraption or a Sable
 	 * ship, whichever {@link ExternalViewClientState#vehicleSpan} resolves for the player.
 	 *
 	 * <p>What the returned distance becomes is {@code eventDistance * entityScale * createZoomMultiplier}: the
@@ -51,14 +51,18 @@ public final class ExternalViewEvents {
 	 * <p>Only the un-flipped camera on the player's own perspective qualifies: a mirrored third-person view runs
 	 * the distance negative, and a spectator camera belongs to whatever entity is being watched, not to a rider.
 	 *
-	 * <p>Since the lift and pitch decoupling landed, {@code CameraMaxZoomMixin} recomputes the position at the tail
-	 * of {@code setup} from {@link ExternalViewClientState#currentDistance()} directly, so this event is no longer
-	 * what places the camera - it stays because it is the cleanest proof the view's number reached the camera code,
-	 * and because the HEAD bypass means the walk this value feeds is never run against the hull.
+	 * <p>The placement itself no longer reads this number: {@code CameraMaxZoomMixin} takes the radius straight from
+	 * {@link ExternalViewClientState#currentDistance()} where it replaces vanilla's retreat, and its HEAD bypass of
+	 * {@code getMaxZoom} means the collision walk never runs against the vehicle at all. The event is kept because it is
+	 * the cheapest proof that the view's number really reached the camera code, and because keeping vanilla's own
+	 * detached distance coherent costs nothing while that walk is skipped.
 	 */
 	@SubscribeEvent
 	public static void onDetachedCameraDistance(CalculateDetachedCameraDistanceEvent event) {
-		if (!ExternalViewClientState.isActive() || event.isCameraFlipped())
+		// Sable's unlocked perspective sizes the orbit from the plot itself, so writing a distance here would only
+		// be overwritten downstream by its own getMaxZoom - and on the way it would fight a number that is already
+		// clamped against the hull.
+		if (!ExternalViewClientState.isActive() || ExternalViewClientState.usesSableView() || event.isCameraFlipped())
 			return;
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.player == null || event.getCamera().getEntity() != mc.player)
@@ -81,9 +85,9 @@ public final class ExternalViewEvents {
 		if (CBCFireControl.DEBUG_CAMERA && !loggedApply) {
 			loggedApply = true;
 			CBCFireControl.LOGGER.info("[cbc_firecontrol] external distance applied: {} blocks requested, "
-					+ "{} written to the event (entity scale {}, create zoom {})",
-					String.format("%.1f", desired), String.format("%.2f", written),
-					String.format("%.2f", scale), String.format("%.2f", createZoom));
+				+ "{} written to the event (entity scale {}, create zoom {})",
+				String.format("%.1f", desired), String.format("%.2f", written),
+				String.format("%.2f", scale), String.format("%.2f", createZoom));
 		}
 	}
 
@@ -137,16 +141,16 @@ public final class ExternalViewEvents {
 		// the duplicate; if they merely stand on deck blocks, only our override can size the view.
 		Entity vehicle = mc.player == null ? null : mc.player.getVehicle();
 		CBCFireControl.LOGGER.info("[cbc_firecontrol] external view diag: requested {} blocks, realized {} "
-						+ "({} above the eye, zoom x{}) (camera entity {}, detached {}, perspective {}, vehicle {}, "
-						+ "sable zoom {})",
-				String.format("%.1f", ExternalViewClientState.currentDistance()),
-				Double.isNaN(realized) ? "unmeasured" : String.format("%.1f", realized),
-				Double.isNaN(elevation) ? "?" : String.format("%.1f", elevation),
-				String.format("%.2f", ExternalViewClientState.zoomFactor()),
-				lookedAt == null ? "none" : lookedAt.getClass().getSimpleName(),
-				camera.isDetached(),
-				mc.options.getCameraType().name(),
-				vehicle == null ? "none" : vehicle.getClass().getSimpleName(),
-				String.format("%.2f", SableShipBounds.cameraZoomAmount(camera)));
+			+ "({} above the eye, zoom x{}) (camera entity {}, detached {}, perspective {}, vehicle {}, "
+			+ "sable zoom {})",
+			String.format("%.1f", ExternalViewClientState.currentDistance()),
+			Double.isNaN(realized) ? "unmeasured" : String.format("%.1f", realized),
+			Double.isNaN(elevation) ? "?" : String.format("%.1f", elevation),
+			String.format("%.2f", ExternalViewClientState.zoomFactor()),
+			lookedAt == null ? "none" : lookedAt.getClass().getSimpleName(),
+			camera.isDetached(),
+			mc.options.getCameraType().name(),
+			vehicle == null ? "none" : vehicle.getClass().getSimpleName(),
+			String.format("%.2f", SableShipBounds.cameraZoomAmount(camera)));
 	}
 }

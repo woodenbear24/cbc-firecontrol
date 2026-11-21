@@ -30,7 +30,9 @@ public abstract class MouseHandlerScrollZoomMixin {
 
 	@Inject(method = "onScroll", at = @At("HEAD"), cancellable = true)
 	private void cbcfc$zoomExternalView(long windowPointer, double xOffset, double yOffset, CallbackInfo ci) {
-		if (!ExternalViewClientState.isActive())
+		// On Sable's unlocked perspective the wheel already belongs to Sable's own zoom, which is smoothed over
+		// ticks rather than stepped, so cancelling here would take the wheel away from the code that owns it.
+		if (!ExternalViewClientState.isActive() || ExternalViewClientState.usesSableView())
 			return;
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.player == null || mc.screen != null)

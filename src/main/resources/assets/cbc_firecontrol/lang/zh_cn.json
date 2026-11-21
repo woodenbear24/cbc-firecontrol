@@ -215,5 +215,6 @@
 	"cbc_firecontrol.round.incomplete_round": "弹丸未组装完整",
 	"cbc_firecontrol.round.not_ignitable": "该发射药无法点燃装药",
 	"cbc_firecontrol.aim.arc.short.flat": "平直",
-	"cbc_firecontrol.aim.arc.short.lob": "曲射"
+	"cbc_firecontrol.aim.arc.short.lob": "曲射",
+	"cbc_firecontrol.external_view.entered": "外部视角"
 }

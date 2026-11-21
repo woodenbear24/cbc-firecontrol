@@ -1,6 +1,7 @@
 package com.cbc.firecontrol.mixin.client;
 
 import com.cbc.firecontrol.client.ExternalViewClientState;
+import com.cbc.firecontrol.client.SableCameraViewBridge;
 
 import net.minecraft.client.CameraType;
 import net.minecraft.client.Minecraft;
@@ -27,11 +28,15 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
  * {@code LevelRenderer#needsUpdate}, without which a perspective change leaves stale world rendering.
  *
  * <p>How the extra view is represented: {@code CameraType} is an enum, so the external view cannot be a fourth
- * constant. It is {@code THIRD_PERSON_BACK} plus {@link ExternalViewClientState#isActive()}, whose distance
- * override is what makes that third-person view sit far enough out to frame the whole vehicle. Stepping off the
- * external view therefore hands back the same enum value with the flag cleared, which is why the branch below
- * returns {@code THIRD_PERSON_BACK} without consulting {@code cycle()}: cycling from it would jump to the
- * mirrored view instead of to the plain one.
+ * constant, and it cannot be one identifier either. Inside a Sable plot it is Sable's unlocked ship perspective,
+ * because that perspective's own camera places the eye on the pose the hull is drawn with - which is what an orbit
+ * that follows the ship instead of jittering against it needs. Outside a plot it is {@code THIRD_PERSON_BACK} plus
+ * {@link ExternalViewClientState#isActive()}, because Sable forces {@code FIRST_PERSON} on every frame whenever the
+ * camera entity's vehicle is not inside a sub-level, so a carriage on rails or a Create train cannot hold its enum
+ * at all. Both identifiers carry the same placement ({@code CameraMaxZoomMixin}); only the orbit radius differs, and
+ * only in who measured it. Stepping off therefore hands back the plain enum value with the flag cleared, which is
+ * why the branch below returns {@code THIRD_PERSON_BACK} without consulting {@code cycle()}: cycling from it would
+ * jump to the mirrored view instead of to the plain one.
  */
 @Mixin(Minecraft.class)
 public abstract class MinecraftCameraTypeCycleMixin {
@@ -44,7 +49,7 @@ public abstract class MinecraftCameraTypeCycleMixin {
 	 * ordering stays authoritative.
 	 */
 	@WrapOperation(method = "handleKeybinds", at = @At(value = "INVOKE",
-			target = "Lnet/minecraft/client/CameraType;cycle()Lnet/minecraft/client/CameraType;"))
+	target = "Lnet/minecraft/client/CameraType;cycle()Lnet/minecraft/client/CameraType;"))
 	private CameraType cbcfc$stepThroughExternalView(CameraType instance, Operation<CameraType> original) {
 		if (ExternalViewClientState.isActive()) {
 			ExternalViewClientState.deactivate("perspective key");
@@ -54,10 +59,22 @@ public abstract class MinecraftCameraTypeCycleMixin {
 		Entity rider = Minecraft.getInstance().player;
 		if (instance == CameraType.FIRST_PERSON && !Float.isNaN(ExternalViewClientState.desiredDistance(rider))) {
 			ExternalViewClientState.activate(rider);
-			return CameraType.THIRD_PERSON_BACK;
+			// Aboard a Sable hull the view borrows Sable's own unlocked ship perspective rather than plain third
+			// person: that perspective places the eye on the pose the hull is actually drawn with, sizes the orbit
+			// from the plot and clamps it against the hull, and declines to fold the hull's rotation into the view
+			// direction, so on that path Sable owns the radius and the rotation and this mod contributes only the
+			// offset off the orbit axis. Activation takes the mode only when the ride relation resolves, which is
+			// the same condition Sable's GameRendererMixin uses to keep the perspective at all, so the two agree
+			// about when the ship is there; and it flags the announcement, because Sable prints its own name for
+			// the switch and the player asked for ours (see GuiExternalViewMessageMixin).
+			CameraType unlocked = SableCameraViewBridge.unlockedView();
+			return ExternalViewClientState.usesSableView() && unlocked != null
+				? unlocked
+				: CameraType.THIRD_PERSON_BACK;
 		}
-		// Defensive: the flag can only be carried by THIRD_PERSON_BACK, so any other step means it is stale.
-		if (instance != CameraType.THIRD_PERSON_BACK)
+		// Defensive: the flag is carried by THIRD_PERSON_BACK or by Sable's unlocked ship perspective, so any other
+		// value means the view is already gone and the overrides must not outlive it.
+		if (instance != CameraType.THIRD_PERSON_BACK && !SableCameraViewBridge.isUnlockedView(instance))
 			ExternalViewClientState.deactivate("perspective cycled past the view");
 		return next;
 	}

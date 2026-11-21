@@ -39,6 +39,12 @@ public final class SableShipBounds {
 	/** (Entity) -> SubLevel: the ship the entity is tracked by, or riding. */
 	@Nullable
 	private static Method trackingOrVehicle;
+	/**
+	 * (Entity) -> SubLevel: the ship the entity is <em>riding</em>, which is the stricter question Sable's own
+	 * camera asks (see {@link #ridesShip}).
+	 */
+	@Nullable
+	private static Method vehicleOnly;
 	/** (Entity) -> ClientSubLevel: the ship whose world footprint contains the entity's position. */
 	@Nullable
 	private static Method containingClient;
@@ -138,6 +144,7 @@ public final class SableShipBounds {
 				Class<?> boxClass = Class.forName("dev.ryanhcode.sable.companion.math.BoundingBox3dc");
 				Method foundTracking = null;
 				Method foundContaining = null;
+				Method foundVehicle = null;
 				try {
 					foundTracking = foundHelper.getClass().getMethod("getTrackingOrVehicleSubLevel", Entity.class);
 				} catch (NoSuchMethodException e) {
@@ -147,6 +154,12 @@ public final class SableShipBounds {
 					foundContaining = foundHelper.getClass().getMethod("getContainingClient", Entity.class);
 				} catch (NoSuchMethodException e) {
 					// A Sable build without the client lookup: tracking still answers for an aboard entity.
+				}
+				try {
+					foundVehicle = foundHelper.getClass().getMethod("getVehicleSubLevel", Entity.class);
+				} catch (NoSuchMethodException e) {
+					// A Sable build without the riding lookup: the view then never borrows Sable's perspective,
+					// which is the safe answer - the stricter gate cannot be checked.
 				}
 				if (foundTracking == null && foundContaining == null)
 					throw new NoSuchMethodException("ActiveSableCompanion has neither "
@@ -161,6 +174,8 @@ public final class SableShipBounds {
 					foundTracking.setAccessible(true);
 				if (foundContaining != null)
 					foundContaining.setAccessible(true);
+				if (foundVehicle != null)
+					foundVehicle.setAccessible(true);
 				foundBoundingBox.setAccessible(true);
 				for (Method corner : foundCorners)
 					corner.setAccessible(true);
@@ -183,6 +198,7 @@ public final class SableShipBounds {
 				helper = foundHelper;
 				trackingOrVehicle = foundTracking;
 				containingClient = foundContaining;
+				vehicleOnly = foundVehicle;
 				boundingBox = foundBoundingBox;
 				corners = foundCorners;
 				pose = foundPose;
@@ -362,6 +378,131 @@ public final class SableShipBounds {
 		}
 		CBCFireControl.LOGGER.info("[cbc_firecontrol] Sable rotation-centre accessors: transformPosition={}, position={}",
 				transformPosition != null, posePosition != null);
+	}
+
+	/**
+	 * Whether the external view can orbit the hull itself this frame: true when the entity is tracked by, riding
+	 * in, or standing inside the footprint of a client sub-level.
+	 */
+	public static boolean aboard(@Nullable Entity entity) {
+		if (entity == null || !ensureAvailable())
+			return false;
+		return lookup(entity) != null;
+	}
+
+	/**
+	 * Whether Sable's own ship camera accepts this entity, which is stricter than {@link #aboard} in one specific
+	 * way that matters: Sable resolves the sub-level through {@code getVehicleSubLevel(cameraEntity)} - the hull
+	 * the camera entity is <em>riding</em> - both when it decides whether to keep its perspective
+	 * ({@code GameRendererMixin#renderLevel}, {@code MinecraftMixin#handleKeybinds}) and when it decides whether
+	 * to fold the hull's pose into the view. A sailor standing on a deck without riding a hull entity is inside a
+	 * plot by position and not by vehicle, so borrowing the unlocked perspective for them would have Sable hand
+	 * the player straight back to first person, making the perspective key look dead. The external view takes that
+	 * perspective only where Sable agrees to keep it.
+	 */
+	public static boolean ridesShip(@Nullable Entity entity) {
+		if (entity == null || !ensureAvailable() || vehicleOnly == null)
+			return false;
+		try {
+			return vehicleOnly.invoke(helper, entity) != null;
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return false;
+		}
+	}
+
+	/** () -> Pose3dc on the sub-level: the pose its geometry is drawn with this frame. */
+	@Nullable
+	private static Method renderPose;
+	/** () -> a JOML-style vector on {@code Pose3dc}: the pose origin, the point the hull turns about. */
+	@Nullable
+	private static Method poseOrigin;
+	/** The three component reads of that vector, resolved against the live object rather than by class name. */
+	@Nullable
+	private static Method componentX;
+	@Nullable
+	private static Method componentY;
+	@Nullable
+	private static Method componentZ;
+	private static boolean renderPoseProbed;
+
+	/**
+	 * The hull's rotation centre as the renderer sees it this frame, or null when this build does not answer.
+	 *
+	 * <p>Why not {@link #rotationCentre}, which reads the logical pose: the ship is drawn through
+	 * {@code ClientSubLevel#renderPose()}, which lerps {@code lastPose()} toward {@code logicalPose()} and slerps
+	 * the orientation, using the timer's <em>accumulated</em> partial tick. {@code lastPose()} is not the previous
+	 * tick's logical pose - it is whatever the snapshot interpolator last sampled from the network - so a pivot
+	 * built from logical poses travels along a different curve than the hull it is meant to frame. That
+	 * difference is the shake the tick-to-frame ramp cannot remove: ramping between two logical poses is linear
+	 * in both endpoints and in time, and the renderer's path is not. Taking the same object the render uses makes
+	 * camera and hull share one curve by construction, which is what Sable's own ship camera does -
+	 * {@code camera.camera_zoom.CameraMixin#sable$setup} places the eye on {@code renderPose().position()} - and
+	 * costs the same one lookup per frame that placement already costs.
+	 */
+	@Nullable
+	public static Vec3 renderPoseOrigin(@Nullable Entity entity) {
+		if (entity == null || !ensureAvailable())
+			return null;
+		Object subLevel = lookup(entity);
+		if (subLevel == null)
+			return null;
+		try {
+			if (renderPose == null && !renderPoseProbed) {
+				renderPoseProbed = true;
+				Method found = subLevel.getClass().getMethod("renderPose");
+				found.setAccessible(true);
+				renderPose = found;
+			}
+			if (renderPose == null)
+				return null;
+			Object shipPose = renderPose.invoke(subLevel);
+			if (shipPose == null)
+				return null;
+			probePoseComponents(shipPose);
+			if (poseOrigin == null || componentX == null || componentY == null || componentZ == null)
+				return null;
+			Object origin = poseOrigin.invoke(shipPose);
+			if (origin == null)
+				return null;
+			double x = ((Number) componentX.invoke(origin)).doubleValue();
+			double y = ((Number) componentY.invoke(origin)).doubleValue();
+			double z = ((Number) componentZ.invoke(origin)).doubleValue();
+			return new Vec3(x, y, z);
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			return null;
+		}
+	}
+
+	/**
+	 * The component reads are taken from the first live pose rather than from a class name: {@code Pose3dc} and
+	 * {@code Pose3d} are both in Sable's companion library and either can be the answer, while both expose
+	 * {@code position() -> x()/y()/z()}. Probing once against a real object keeps a build whose types moved from
+	 * looking like a ship with no pivot.
+	 */
+	private static void probePoseComponents(Object shipPose) {
+		if (poseOrigin != null)
+			return;
+		try {
+			Method foundOrigin = shipPose.getClass().getMethod("position");
+			foundOrigin.setAccessible(true);
+			Object origin = foundOrigin.invoke(shipPose);
+			if (origin == null)
+				return;
+			Method x = origin.getClass().getMethod("x");
+			Method y = origin.getClass().getMethod("y");
+			Method z = origin.getClass().getMethod("z");
+			x.setAccessible(true);
+			y.setAccessible(true);
+			z.setAccessible(true);
+			poseOrigin = foundOrigin;
+			componentX = x;
+			componentY = y;
+			componentZ = z;
+			CBCFireControl.LOGGER.info("[cbc_firecontrol] Sable render-pose pivot ready ({} / {})",
+					shipPose.getClass().getSimpleName(), origin.getClass().getSimpleName());
+		} catch (ReflectiveOperationException | RuntimeException e) {
+			CBCFireControl.LOGGER.info("[cbc_firecontrol] Sable render-pose components unavailable: {}", e.toString());
+		}
 	}
 }
 

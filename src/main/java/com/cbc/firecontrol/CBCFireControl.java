@@ -61,13 +61,17 @@ public class CBCFireControl {
 
 	/**
 	 * One switch for the external view's camera diagnostics: the placement line and the rotation-anomaly line in
-	 * {@code CameraMaxZoomMixin}, the distance probe in {@code ExternalViewEvents}, and the orbit/pivot step lines
-	 * in {@link com.cbc.firecontrol.client.ExternalViewClientState}. It is {@code false} now that the view's
-	 * behaviour has been read out; flip it to {@code true} if a twitch or a framing pop has to be hunted again -
-	 * those lines are event-triggered, so an off switch costs nothing while an on switch names the frame it fires
-	 * on rather than sampling every sixty frames.
+	 * {@code CameraMaxZoomMixin}, the distance probe in {@code ExternalViewEvents}, the orbit/pivot step lines in
+	 * {@link com.cbc.firecontrol.client.ExternalViewClientState}, and the per-frame record in
+	 * {@link com.cbc.firecontrol.client.ExternalViewTrace}.
+	 *
+	 * <p>Read from a system property rather than compiled in: the questions these lines answer - whether the eye
+	 * keeps its distance from the point the hull is drawn at, and which partial-tick convention each side uses -
+	 * can only be asked of a live client, and a compiled constant forces a rebuild for every experiment. Turn it
+	 * on with {@code -Dcbc.firecontrol.debugCamera=true}. Off by default, and every use checks it before
+	 * formatting, file work, or a Sable lookup, so the camera's hot path pays nothing while it is off.
 	 */
-	public static final boolean DEBUG_CAMERA = false;
+	public static boolean DEBUG_CAMERA = Boolean.getBoolean("cbc.firecontrol.debugCamera");
 
 	/**
 	 * One switch for the head-aim console's sight-line diagnostic: the line naming the tick a reported camera
