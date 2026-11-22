@@ -1,0 +1,30 @@
+{
+  "type": "minecraft:block",
+  "pools": [
+    {
+      "bonus_rolls": 0.0,
+      "conditions": [
+        {
+          "condition": "minecraft:survives_explosion"
+        }
+      ],
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "name": "cbc_firecontrol:armored_steel_block"
+        }
+      ],
+      "functions": [
+        {
+          "function": "minecraft:copy_state",
+          "block": "cbc_firecontrol:armored_steel_block",
+          "properties": [
+            "color"
+          ]
+        }
+      ],
+      "rolls": 1.0
+    }
+  ],
+  "random_sequence": "cbc_firecontrol:blocks/armored_steel_block"
+}

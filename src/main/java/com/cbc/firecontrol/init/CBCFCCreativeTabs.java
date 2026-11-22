@@ -38,6 +38,7 @@ public class CBCFCCreativeTabs {
 						// "Itemstack already exists" duplicate.
 						output.accept(CBCFCBlocks.ADVANCED_CANNON_MOUNT.get().asItem());
 						output.accept(CBCFCBlocks.TRAJECTORY_CALCULATOR.get().asItem());
+						output.accept(CBCFCBlocks.ARMORED_STEEL_BLOCK.get().asItem());
 						output.accept(new ItemStack(CBCItems.CALCULATOR_LINK.get()));
 						output.accept(new ItemStack(CBCItems.TARGET_DESIGNATOR.get()));
 					})

@@ -2,13 +2,19 @@ package com.cbc.firecontrol.init;
 
 import com.cbc.firecontrol.CBCFireControl;
 import com.cbc.firecontrol.block.AdvancedCannonMountBlock;
+import com.cbc.firecontrol.block.ArmoredSteelBlock;
 import com.cbc.firecontrol.block.TrajectoryCalculatorBlock;
+import com.cbc.firecontrol.client.ArmoredSteelCTBehaviour;
+import com.cbc.firecontrol.client.CBCFCSpriteShifts;
+import com.simibubi.create.foundation.data.CreateRegistrate;
 import com.tterrag.registrate.util.entry.BlockEntry;
 
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.material.MapColor;
 
 // CBC's CannonMountDisplaySource (single yaw/pitch value) is no longer attached to our block;
 // our own AdvancedCannonMountDisplaySource (see CBCFCDisplaySources) is used instead.
@@ -79,6 +85,30 @@ public class CBCFCBlocks {
 					// Explicit BlockItem (Registrate's BlockBuilder does not auto-create one), mirroring
 					// ADVANCED_CANNON_MOUNT above. en_us/zh_cn "block.cbc_firecontrol.trajectory_calculator"
 					// covers both the block and its item name.
+					.item()
+					.build()
+					.register();
+
+	public static final BlockEntry<ArmoredSteelBlock> ARMORED_STEEL_BLOCK =
+			CBCFireControl.REGISTRATE
+					.block("armored_steel_block", ArmoredSteelBlock::new)
+					.initialProperties(() -> Blocks.IRON_BLOCK)
+					// Same map colour CBC's steel block uses, so the un-dyed (white) state reads as German grey
+					// rather than vanilla's warm metal tone.
+					.properties(p -> p.mapColor(MapColor.TERRACOTTA_GRAY))
+					// Plain cube_all: the connected texture is a UV shift of this one tile, so there is one model
+					// for all sixteen colours and no RenderType override (the block stays fully opaque like iron).
+					// Assets are hand-written under src/main/resources (same as the mount and the calculator):
+					// blockstates/armored_steel_block.json lists the sixteen colour variants, each pointing at
+					// models/block/armored_steel_block.json.
+					.lang("Block of Armored Steel")
+					// Create's connected-texture pipeline only: wraps this block's baked model in CTModel. NOT
+					// BuilderTransformers.casing(...), NOT EncasedCTBehaviour, NOT CasingConnectivity#makeCasing -
+					// those would connect this block with create:andesite_casing (they group by shared casing
+					// sprite) and would also pull in the casing transformer's wood sound, loot table and tags.
+					.onRegister(CreateRegistrate.connectedTextures(
+							() -> new ArmoredSteelCTBehaviour(CBCFCSpriteShifts.ARMORED_STEEL)))
+					.tag(BlockTags.MINEABLE_WITH_PICKAXE, BlockTags.NEEDS_IRON_TOOL)
 					.item()
 					.build()
 					.register();

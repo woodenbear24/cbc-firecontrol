@@ -4,6 +4,7 @@
   "key.cbc_firecontrol.designator_scope": "用副手目标指示器放大",
   "block.cbc_firecontrol.advanced_cannon_mount": "先进炮座",
   "block.cbc_firecontrol.trajectory_calculator": "弹道计算器",
+  "block.cbc_firecontrol.armored_steel_block": "装甲钢块",
   "cbc_firecontrol.display_source.advanced_cannon_mount": "先进炮座",
   "cbc_firecontrol.display_source.advanced_cannon_mount.position": "位置：%s %s %s",
   "cbc_firecontrol.display_source.advanced_cannon_mount.barrel": "航向：%s  仰角：%s",

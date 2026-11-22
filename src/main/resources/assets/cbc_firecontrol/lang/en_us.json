@@ -4,6 +4,7 @@
   "key.cbc_firecontrol.designator_scope": "Scope with off-hand Target Designator",
   "block.cbc_firecontrol.advanced_cannon_mount": "Advanced Cannon Mount",
   "block.cbc_firecontrol.trajectory_calculator": "Trajectory Calculator",
+  "block.cbc_firecontrol.armored_steel_block": "Block of Armored Steel",
   "cbc_firecontrol.display_source.advanced_cannon_mount": "Advanced Cannon Mount",
   "cbc_firecontrol.display_source.advanced_cannon_mount.position": "Position: %s %s %s",
   "cbc_firecontrol.display_source.advanced_cannon_mount.barrel": "Yaw %s  Pitch %s",

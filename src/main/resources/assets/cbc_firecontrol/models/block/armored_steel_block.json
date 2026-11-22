@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:block/cube_all",
+  "textures": {
+    "all": "cbc_firecontrol:block/armored_steel_block"
+  }
+}

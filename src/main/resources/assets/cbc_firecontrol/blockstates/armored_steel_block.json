@@ -1,0 +1,20 @@
+{
+  "variants": {
+    "color=white": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=orange": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=magenta": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=light_blue": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=yellow": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=lime": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=pink": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=gray": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=light_gray": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=cyan": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=purple": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=blue": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=brown": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=green": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=red": { "model": "cbc_firecontrol:block/armored_steel_block" },
+    "color=black": { "model": "cbc_firecontrol:block/armored_steel_block" }
+  }
+}
