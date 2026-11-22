@@ -96,11 +96,13 @@ public class CBCFCBlocks {
 					// Same map colour CBC's steel block uses, so the un-dyed (white) state reads as German grey
 					// rather than vanilla's warm metal tone.
 					.properties(p -> p.mapColor(MapColor.TERRACOTTA_GRAY))
-					// Plain cube_all: the connected texture is a UV shift of this one tile, so there is one model
-					// for all sixteen colours and no RenderType override (the block stays fully opaque like iron).
-					// Assets are hand-written under src/main/resources (same as the mount and the calculator):
-					// blockstates/armored_steel_block.json lists the sixteen colour variants, each pointing at
-					// models/block/armored_steel_block.json.
+					// An authored six-face cube (not block/cube_all): every face carries "tintindex": 0, because
+					// ModelBlockRenderer and ItemRenderer only consult block/item colors for quads that report
+					// BakedQuad#isTinted(), and cube_all's faces do not. One model for all sixteen colours, since the
+					// colour reaches the screen through the tint in CBCFCBlockColors, and no RenderType override
+					// (the block stays fully opaque like iron). Assets are hand-written under src/main/resources
+					// (same as the mount and the calculator): blockstates/armored_steel_block.json lists the sixteen
+					// colour variants, each pointing at models/block/armored_steel_block.json.
 					.lang("Block of Armored Steel")
 					// Create's connected-texture pipeline only: wraps this block's baked model in CTModel. NOT
 					// BuilderTransformers.casing(...), NOT EncasedCTBehaviour, NOT CasingConnectivity#makeCasing -

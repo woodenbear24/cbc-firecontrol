@@ -32,22 +32,37 @@ import net.minecraft.world.phys.BlockHitResult;
  * {@link ItemStack#shrink(int)}). The colour lives in the block state rather than a block entity, so it survives
  * contraption assembly (StructureTransform copies properties) and a state change rebuilds the chunk section,
  * which is what re-runs the connected-texture gather for this block and its neighbours. Rendering applies it as a
- * tint (see {@code CBCFCBlockColors}); {@link DyeColor#WHITE} is the un-dyed state and asks for no tint at all.
- * Because tint is multiplicative, the base texture is authored light (German grey) with dark structural lines, so
- * a dyed block gains colour on the body while the rivets and seams stay readable.
+ * tint (see {@code CBCFCBlockColors}) - and the tint only reaches the screen because the block's model declares
+ * {@code "tintindex": 0} on all six faces: {@code ModelBlockRenderer} asks {@code BlockColors} for a colour only
+ * when {@code BakedQuad#isTinted()}, so vanilla's {@code block/cube_all} (no tint index on its faces) would have
+ * silently ignored the dye. The authored texture is therefore bright (body {@code #D6D8DB}) and {@link DyeColor#WHITE}
+ * is the un-dyed state, which multiplies it back down to German grey; a dye multiplies it at full strength, so
+ * orange dye reads as orange rather than as a washed-out stain.
  *
- * <p>Breaking one hands back its dye: {@code data/cbc_firecontrol/loot_table/blocks/armored_steel_block.json}
- * drops the block item and applies {@code minecraft:copy_state} with the {@code color} property, which writes the
- * vanilla {@code minecraft:block_state} component ({@code DataComponents.BLOCK_STATE}, value type
- * {@code BlockItemStateProperties}) that {@code BlockItem} re-applies when the drop is placed again. No Java is
- * involved - {@code Block#getDrops} is static in 1.21.1, so the loot table is the only hook.
+ * <p>Breaking one drops the plain block item: {@code data/cbc_firecontrol/loot_table/blocks/armored_steel_block.json}
+ * has no {@code minecraft:copy_state} function, so the dye is not written into {@code DataComponents.BLOCK_STATE}
+ * and a broken block re-placeable as un-dyed. Colour is a placement-time cosmetic only.
  *
  * <p>It is also armour in CBC's own terms: {@code data/cbc_firecontrol/block_armor/armored_steel_block.json}
- * gives it {@code hardness 2.5 / toughness 11} (iron_block is {@code 1 / 9}, the obsidian tag is {@code 2 / 4}),
- * which {@code BlockArmorPropertiesHandler} reads from the {@code block_armor} reload directory - the file's
- * resource location doubles as the block id, so no Java registration is needed - and which
- * {@code AbstractCannonProjectile#calculateBlockPenetration} then weighs against a projectile's
- * {@code penetration / toughness / deflection} from {@code munition_properties}.
+ * gives it {@code hardness 2.5 / toughness 90}, which {@code BlockArmorPropertiesHandler} reads from the
+ * {@code block_armor} reload directory - the file's resource location doubles as the block id, so no Java
+ * registration is needed - and which {@code AbstractBigCannonProjectile#impactBlock} then weighs against the
+ * projectile. Penetration needs {@code momentum = mass x (velMag x incidence) x (1 + max(0, velMag - 1) x 0.1)}
+ * to reach {@code toughness} (config defaults {@code minimumVelocityForPenetrationBonus = 1},
+ * {@code penetrationBonusScale = 0.1}), and muzzle velocity equals the number of powder charges, so a steel cannon
+ * tops out at {@code maxSafePropellantStress = 8}: the AP shot (mass 8) reaches 108.8 at 8 charges and drills
+ * through, needs ~7 charges to reach 90 at all, and the AP shell (mass 6) only reaches 81.6 - which stops. HE,
+ * shrapnel, fluid and smoke shells (mass 2) and the solid shot (mass 3) never get close. Netherite blocks have no
+ * {@code block_armor} entry, so they fall back to {@code hardness 1 / toughness = getExplosionResistance() = 1200};
+ * armored steel is thus a tier below in toughness while its higher {@code hardness 2.5} (vs {@code 1}) makes clean
+ * stops and shattering more likely - {@code hardnessPenalty = hardness - projectile.penetration} decides both the
+ * bounce bonus and {@code shatter}. The block's own explosion resistance stays at iron block's 6, which is what
+ * explosions (HE {@code block_damaging_explosive_power = 8}) test against - a separate mechanism from armour.
+ *
+ * <p>It is reversible metal: {@code data/cbc_firecontrol/recipe/steel_ingot_from_armored_steel_block.json}
+ * unpacks one block into nine {@code createbigcannons:steel_ingot}, the same shapeless shape CBC uses to unpack its
+ * own steel block (see {@code createbigcannons:recipe/steel_ingot_from_block.json}). Since the block is smelted from
+ * one steel block, which is itself nine ingots, the loop costs furnace fuel rather than duplicating steel.
  *
  * <p>Known limitation, inherited from the renderer rather than this block: a block belonging to a Sable sub-level
  * (the ship's own hull) renders through Sable's mesh builders, which fetch quads with
@@ -71,8 +86,8 @@ public class ArmoredSteelBlock extends Block {
 
 	public ArmoredSteelBlock(Properties properties) {
 		super(properties);
-		// WHITE is "un-dyed": CBCFCBlockColors returns no tint for it, so a freshly placed or freshly smelted
-		// block shows the authored German grey body exactly as drawn.
+		// WHITE is "un-dyed": CBCFCBlockColors multiplies the bright authored plate by UNDYED_TINT, so a freshly
+		// placed or freshly smelted block shows German grey, the same grey CBC's steel block reads as.
 		this.registerDefaultState(this.stateDefinition.any().setValue(COLOR, DyeColor.WHITE));
 	}
 

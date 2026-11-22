@@ -14,15 +14,6 @@
           "name": "cbc_firecontrol:armored_steel_block"
         }
       ],
-      "functions": [
-        {
-          "function": "minecraft:copy_state",
-          "block": "cbc_firecontrol:armored_steel_block",
-          "properties": [
-            "color"
-          ]
-        }
-      ],
       "rolls": 1.0
     }
   ],

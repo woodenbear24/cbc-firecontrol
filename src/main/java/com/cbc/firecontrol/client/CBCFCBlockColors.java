@@ -15,44 +15,53 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RegisterColorHandlersEvent;
 
 /**
- * The faint colour mask for dyed armored steel.
+ * The colour of armored steel: block tint and inventory tint.
  *
- * <p>Registered as a NeoForge block color on the mod bus. {@code DyeColor#getTextureDiffuseColor()} is the same
- * value vanilla's wool and carpet tinting uses; it is mixed toward white by {@link #MASK_STRENGTH} so the dye
- * reads as a light wash over the German grey body rather than a solid colour. {@link DyeColor#WHITE} is the
- * un-dyed state and returns a plain white tint (no change).
+ * <p>Tint is only ever requested for quads that declare one. {@code ModelBlockRenderer} and {@code ItemRenderer}
+ * both gate on {@code BakedQuad#isTinted()}, and vanilla's {@code block/cube_all} faces carry no tint index, so the
+ * model here is authored as its own six-face cube with {@code "tintindex": 0} on every face
+ * ({@code assets/cbc_firecontrol/models/block/armored_steel_block.json}) - that is what makes dyeing work at all.
+ * Create's {@code CTModel} clones the quad and rewrites only its UVs, so connected faces keep the tint index too.
  *
- * <p>Tint is multiplicative, so it lands on every pixel of the tile equally: the authored base texture keeps dark
- * structural lines and a light body precisely so that dyeing colours the body while rivets and seams stay legible.
+ * <p>Multiplicative tint cannot brighten a pixel, so the dye is applied at full strength -
+ * {@code DyeColor#getTextureDiffuseColor()}, the same value vanilla wool and carpet use - and the structural
+ * contrast comes from the texture, whose body is authored bright ({@code #D6D8DB}) with a dark frame line
+ * ({@code #9C9EA1}) and corner ({@code #8A8C8F}). Blending the dye toward white instead, as an earlier version did,
+ * turned red into mud.
+ *
+ * <p>{@link DyeColor#WHITE} is the un-dyed state and cannot be a no-op now that the base is bright: it asks for
+ * {@link #UNDYED_TINT}, a slightly cool grey multiplier that puts the plate back at the German grey CBC's steel
+ * block uses (mean luminance ~132) while keeping the frame legible. The same multiplier tints the block item,
+ * whose stack has no block state to read.
  */
 @EventBusSubscriber(modid = CBCFireControl.MODID, value = Dist.CLIENT, bus = EventBusSubscriber.Bus.MOD)
 public class CBCFCBlockColors {
 
 	/**
-	 * How far the dye colour is pushed toward full saturation as a block tint. 0.4 makes the dye clearly visible
-	 * (user-chosen) while leaving the German grey body and its dark seams dominant.
+	 * Un-dyed armored steel: the bright authored plate multiplied down to German grey. Hand-picked so that the
+	 * dominant body pixel {@code #D6D8DB} lands back on {@code #888A8D} and the frame pixel {@code #8A8C8F} lands
+	 * on {@code #58595B} - within two units of the approved mid-grey texture's {@code #888A8D} / {@code #5A5C5F}.
 	 */
-	private static final float MASK_STRENGTH = 0.4F;
+	private static final int UNDYED_TINT = 0xFFA2A3A4;
 
 	@SubscribeEvent
 	public static void onRegisterBlockColors(RegisterColorHandlersEvent.Block event) {
 		event.register(CBCFCBlockColors::armoredSteelTint, CBCFCBlocks.ARMORED_STEEL_BLOCK.get());
 	}
 
+	/**
+	 * The block item shares the block's model, and its quads are tinted, so the icon would otherwise show the
+	 * un-multiplied bright plate. {@code ItemRenderer#renderQuadList} only consults item colours when the stack is
+	 * non-empty, which is always true for a rendered icon.
+	 */
+	@SubscribeEvent
+	public static void onRegisterItemColors(RegisterColorHandlersEvent.Item event) {
+		event.register((stack, tintIndex) -> UNDYED_TINT, CBCFCBlocks.ARMORED_STEEL_BLOCK.get().asItem());
+	}
+
 	/** The multiplicative RGB tint applied to armored steel, from the dye stored in its block state. */
 	public static int armoredSteelTint(BlockState state, BlockAndTintGetter level, BlockPos pos, int tintIndex) {
 		DyeColor dye = state.getValue(ArmoredSteelBlock.COLOR);
-		if (dye == DyeColor.WHITE)
-			return 0xFFFFFF;
-		int rgb = dye.getTextureDiffuseColor();
-		int r = blendChannel((rgb >> 16) & 0xFF);
-		int g = blendChannel((rgb >> 8) & 0xFF);
-		int b = blendChannel(rgb & 0xFF);
-		return 0xFF000000 | (r << 16) | (g << 8) | b;
-	}
-
-	/** Pull one 0-255 dye channel toward white by {@link #MASK_STRENGTH} (0 = stay white, 1 = full dye colour). */
-	private static int blendChannel(int dyeChannel) {
-		return Math.round(0xFF + (dyeChannel - 0xFF) * MASK_STRENGTH);
+		return dye == DyeColor.WHITE ? UNDYED_TINT : 0xFF000000 | dye.getTextureDiffuseColor();
 	}
 }
